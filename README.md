@@ -1,2 +1,2 @@
-# UpLift
+# LeeSide
  Paragliding flight logbook
