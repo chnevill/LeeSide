@@ -105,7 +105,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);fon
      right at that fade edge. Duplicates #ambient's gradient values rather
      than sharing a selector, since #nav needs this extra fallback layer and
      #ambient doesn't - if the ambient glow colors ever change, these need
-     updating alongside it.
+     updating alongside it. 
   */
   #nav{position:sticky;top:0;z-index:5;background:radial-gradient(ellipse 100% 50% at 50% -5%,#1a3d7a 0%,transparent 55%) fixed,var(--bg);padding-top:6px}
   body.theme-light #nav{background:radial-gradient(ellipse 100% 50% at 50% -5%,#c8daf0 0%,transparent 55%) fixed,var(--bg)}
