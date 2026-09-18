@@ -1,4 +1,4 @@
-const CACHE='leeside-v587';
+const CACHE='leeside-v588';
 const URLS=[
   '/LeeSide/',
   '/LeeSide/index.html'
