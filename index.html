@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v638';
+const APP_VERSION='v639';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -3797,12 +3797,12 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
     // of this function for why. Re-checks the overlay is still open now,
     // not just when the sync started, so this can't reopen something the
     // person already closed while it was running.
-    if(_preSyncDetailFlightId!=null&&_overlayStack.includes('detailOverlay'))showDetail(_preSyncDetailFlightId);
+    if(_preSyncDetailFlightId!=null&&_overlayStack.includes('detailOverlay'))_refreshOpenView('detailSheet',()=>showDetail(_preSyncDetailFlightId));
     if(_preSyncNoteViewOpen&&_overlayStack.includes('noteViewOverlay')){
-      if(_preSyncNoteViewSiteKey)showNoteView(null,_preSyncNoteViewSiteKey);
-      else if(_preSyncNoteViewNoteId!=null)showNoteView(_preSyncNoteViewNoteId);
+      if(_preSyncNoteViewSiteKey)_refreshOpenView('noteViewSheet',()=>showNoteView(null,_preSyncNoteViewSiteKey));
+      else if(_preSyncNoteViewNoteId!=null)_refreshOpenView('noteViewSheet',()=>showNoteView(_preSyncNoteViewNoteId));
     }
-    if(_preSyncGearCat!=null&&_overlayStack.includes('gearViewOverlay'))showGearOverview(_preSyncGearCat,_preSyncGearIdx);
+    if(_preSyncGearCat!=null&&_overlayStack.includes('gearViewOverlay'))_refreshOpenView('gearViewSheet',()=>showGearOverview(_preSyncGearCat,_preSyncGearIdx));
   }catch(e){
     log('ERROR:',(e&&e.name&&e.name!=='Error'?e.name+': ':'')+(e.message||e),'(attempt '+(retryCount+1)+', after '+(typeof _syncT0==='number'?_ms(_syncT0):'?')+' ms, canSync='+canSync(force)+', online='+navigator.onLine+', token='+(accessToken?'yes':'no')+(e&&e.isRateLimit?', RATE LIMIT':'')+')');
     if(!accessToken&&retryCount<3&&canSync(force)){
@@ -4069,6 +4069,29 @@ function openOverlay(id,onClose){
   if(isAndroid){
     _histCtx.push({id,onClose:onClose||(()=>closeOverlay(id))});
     history.pushState({depth:_histCtx.length},'');
+  }
+}
+// v639: keep the reading position when an open flight / note / site note / gear
+// screen is redrawn by the sync that finishes a moment after an edit (e.g. ticking
+// a checklist item). Every one of those screens used to jump back to the top on
+// that redraw, because opening any of them deliberately scrolls to the top. A
+// normal open is unchanged (still starts at the top); only the post-sync redraw
+// asks to keep the position. Display only - touches no data, merge or upload.
+let _keepScroll=null; // {sheetId,top}, set only by _refreshOpenView below
+function _resetViewScroll(sheetId){
+  const el=document.getElementById(sheetId);
+  if(!el)return;
+  if(_keepScroll&&_keepScroll.sheetId===sheetId){el.scrollTop=_keepScroll.top;_keepScroll=null;}
+  else el.scrollTop=0;
+}
+function _refreshOpenView(sheetId,redraw){
+  const el=document.getElementById(sheetId);
+  const top=el?el.scrollTop:0;
+  _keepScroll={sheetId,top};
+  try{redraw();}
+  finally{
+    if(el)el.scrollTop=top; // right away, in case the redraw itself moved it
+    setTimeout(()=>{_keepScroll=null;},200); // never let the request outlive this one redraw
   }
 }
 // Triggers a waiting service worker update at the moment it's actually safe -
@@ -5018,7 +5041,7 @@ function showDetail(id){
     ${photos}
     <button class="btn btn-gold" id="detailEditBtn">Edit Flight</button>
     <button class="btn btn-ghost" id="detailCloseBtn" style="margin-top:8px">Close</button>`;
-  setTimeout(()=>{document.getElementById('detailSheet').scrollTop=0;},30);
+  setTimeout(()=>{_resetViewScroll('detailSheet');},30);
   if(!document.getElementById('detailOverlay').classList.contains('open')){
     openOverlay('detailOverlay');
   }
@@ -7594,7 +7617,7 @@ function showNoteView(nid,siteKey){
     document.getElementById('noteViewEmergencyBtn').onclick=()=>{openEmergencyPage(curName);};
     document.getElementById('noteViewCloseBtn').onclick=()=>{closeOverlay('noteViewOverlay');returnFromSiteNote();};
     openOverlay('noteViewOverlay',()=>{closeOverlay('noteViewOverlay');returnFromSiteNote();});
-    setTimeout(()=>{document.getElementById('noteViewSheet').scrollTop=0;},30);
+    setTimeout(()=>{_resetViewScroll('noteViewSheet');},30);
     return;
   }
   editSiteKey=null;
@@ -7617,7 +7640,7 @@ function showNoteView(nid,siteKey){
       <button class="btn btn-gold" id="noteViewEditBtn" style="margin:0">Edit Note</button>
       <button class="btn btn-ghost" id="noteViewCloseBtn" style="margin:0">Close</button>
     </div>`;
-  setTimeout(()=>{document.getElementById('noteViewSheet').scrollTop=0;},30);
+  setTimeout(()=>{_resetViewScroll('noteViewSheet');},30);
   document.getElementById('noteViewEditBtn').onclick=()=>{closeOverlay('noteViewOverlay');openNoteModal(n.id);};
   document.getElementById('noteViewCloseBtn').onclick=()=>{
     closeOverlay('noteViewOverlay');
@@ -8047,7 +8070,7 @@ function _showGearByFlat(flatIdx,all){
     ${urlHtml}
     <button class="btn btn-gold" id="gearViewEditBtn">Edit ${catInfo.label}</button>
     <button class="btn btn-ghost" id="gearViewCloseBtn" style="margin-top:8px">Close</button>`;
-  setTimeout(()=>{document.getElementById('gearViewSheet').scrollTop=0;},30);
+  setTimeout(()=>{_resetViewScroll('gearViewSheet');},30);
   document.getElementById('gearViewEditBtn').addEventListener('click',()=>{closeOverlay('gearViewOverlay');openGearDetail(cat,idx);});
   document.getElementById('gearViewCloseBtn').addEventListener('click',()=>closeOverlay('gearViewOverlay'));
   if(!document.getElementById('gearViewOverlay').classList.contains('open')){
