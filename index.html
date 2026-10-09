@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v639';
+const APP_VERSION='v640';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -1170,6 +1170,14 @@ let _swReg=null; // the active service worker registration, set once navigator.s
 let localDataOwnerEmail=null;
 // v638: what the last fully completed sync left behind - {fileId,email,md5,fp,at,size}. Used ONLY by the watch-only skip check below (it never changes what a sync does). Local-only, never uploaded.
 let syncMark=null;
+// v640: format guard. This version (and every version before it) understands exactly
+// one Drive layout: everything in the single metadata file. A later version will leave
+// a numeric "leesideFormat" field (2 or higher) in that file once an account has moved
+// to a newer layout. If this version ever sees that, it stops syncing instead of
+// writing old-layout data over a newer layout. Strictly opt-in: a missing, empty,
+// non-numeric, fractional or 1-or-lower value is ignored and sync runs exactly as before.
+const SUPPORTED_DRIVE_FORMAT=1;
+let _formatLocked=false; // in memory only; set/cleared by each download
 let debugMode=false; // local-only, never synced — toggled via long-press on the logo
 let uploadedPhotoHashes=[];
 let _tokenExpiry=0, _tokenRefreshTimer=null;
@@ -3684,6 +3692,17 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
         log('metadata download:',fmtBytes(byteLen(rawText)),`(${_ms(_tFetch)} ms total)`);
         recordSyncBytes('down',byteLen(rawText));
         const remote=JSON.parse(rawText);
+        // v640 format guard (see SUPPORTED_DRIVE_FORMAT). Checked before anything is
+        // merged, saved or uploaded, so a locked sync changes nothing at all.
+        const _fmt=remote&&remote.leesideFormat;
+        if(typeof _fmt==='number'&&Number.isInteger(_fmt)&&_fmt>SUPPORTED_DRIVE_FORMAT){
+          _formatLocked=true;
+          log(`FORMAT GUARD: Drive is in format ${_fmt}, this version only understands format ${SUPPORTED_DRIVE_FORMAT} - sync stopped, nothing merged, saved or uploaded. Update LeeSide to keep syncing.`);
+          showSync('Update LeeSide to keep syncing','offline',0);
+          renderDebugPanel();
+          return;
+        }
+        _formatLocked=false;
         const remoteFlights=Array.isArray(remote.flights)?remote.flights:[];
         const remoteNotes=Array.isArray(remote.notes)?remote.notes:[];
         const remoteGear=remote.gear||{};
@@ -3844,6 +3863,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
 }
 
 async function saveToDrive(allowReauth=false,forceSync=false){
+  if(_formatLocked){log('save to Drive skipped: FORMAT GUARD - Drive is in a newer format than this version understands (saved locally only)');localSave();return;}
   if(!canSync(forceSync)){log(`save to Drive skipped: blocked - online=${navigator.onLine}, wifiOnly=${!!settings.wifiOnly}, onWifi=${isOnWifi()}, force=${forceSync} (saved locally only)`);localSave();return;}
   if(!accessToken){
     log('save to Drive: no token, saved locally only');
@@ -10924,6 +10944,7 @@ function wire(){
   document.getElementById('importJsonRow').addEventListener('click',()=>document.getElementById('importFile').click());
   document.getElementById('importFile').addEventListener('change',function(){importJSON(this);});
   document.getElementById('forcePushBtn').addEventListener('click',async()=>{
+    if(_formatLocked){await showAlert('Drive has moved to a newer LeeSide format. Update LeeSide first. Nothing has been changed.');return;}
     if(!await showConfirm('Force push local data to Drive? This will overwrite Drive with your current local data — use this to fix duplicates.','Force Push'))return;
     if(!accessToken){showSync('Not signed in','offline');return;}
     showSync('Force pushing to Drive…','syncing',0);
@@ -10937,6 +10958,7 @@ function wire(){
   });
 
   document.getElementById('resetAllBtn').addEventListener('click',async()=>{
+    if(_formatLocked){await showAlert('Drive has moved to a newer LeeSide format. Update LeeSide first. Nothing has been changed.');return;}
     if(!await showConfirm('Reset EVERYTHING for '+(userInfo?.email||'this account')+'? All flights, notes, gear and settings will be deleted — including your Google Drive backup — and you\'ll be signed out completely, so a different account can sign in afterward. This cannot be undone. Export a backup first if needed.','Reset Everything'))return;
     if(!await showConfirm('Are you absolutely sure? This will delete everything and cannot be undone.','Yes, Reset Everything'))return;
     // A genuine "I'm done, delete it all" action - it has to actually reach
