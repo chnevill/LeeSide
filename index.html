@@ -822,7 +822,7 @@ body.theme-light .star-input button,body.theme-terra .star-input button{color:rg
   <div class="fg" style="display:flex;gap:8px;align-items:flex-end">
     <div style="flex:1"><label>GPS coordinates</label>
       <div style="position:relative">
-        <input type="text" id="esCoords" placeholder="lat,lon — e.g. 37.666369,-122.494513" inputmode="decimal" style="padding-right:44px">
+        <input type="text" id="esCoords" placeholder="Paste or type coordinates" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" style="padding-right:44px">
         <button id="esPickCoordsBtn" type="button" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);width:36px;height:36px;border-radius:50%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:16px;display:flex;align-items:center;justify-content:center;cursor:pointer">🗺️</button>
       </div>
     </div>
@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v640';
+const APP_VERSION='v642';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7198,6 +7198,21 @@ async function runSiteMapSearch(){
   const resultsEl=document.getElementById('siteMapSearchResults');
   const q=input.value.trim();
   if(!q){resultsEl.style.display='none';return;}
+  // Coordinates in any format jump straight there - no network needed, so this works offline too.
+  const cp=parseCoordsDetailed(q);
+  if(cp.error===undefined){
+    _siteMapInstance.setView([cp.lat,cp.lon],15);
+    resultsEl.style.display='none';
+    const readingEl=document.getElementById('siteMapReading');
+    readingEl.style.display='block';
+    readingEl.textContent=`${cp.lat.toFixed(6)}, ${cp.lon.toFixed(6)}`;
+    return;
+  }
+  if(cp.coordLike){
+    resultsEl.style.display='block';
+    resultsEl.innerHTML='<div style="padding:12px 16px;color:#7a90a8;font-size:14px">'+escapeNoteHtml(cp.error)+'</div>';
+    return;
+  }
   resultsEl.style.display='block';
   resultsEl.innerHTML='<div style="padding:12px 16px;color:#7a90a8;font-size:14px">Searching…</div>';
   const ql=q.toLowerCase();
@@ -9216,73 +9231,229 @@ async function esDeleteLaunch(name){
 // view, but is otherwise a separate, self-contained overlay rather than a
 // modification to that already-working screen.
 let _coordPickerInstance=null;
-// Accepts either plain decimal degrees ("37.666369,-122.494513") or degrees/
-// minutes/seconds ("37°40'12"N, 122°25'42"W" — seconds optional, comma optional,
-// hemisphere letter optional), since coordinates copied from a GPS device or a
-// site guide often arrive in DMS rather than decimal. Storage/display format
-// never changes — this only widens what can be typed in, always converting to
-// decimal immediately.
+// Coordinate reader (v641). Accepts coordinates in any common format and always
+// converts straight to decimal degrees; storage/display format never changes.
+// Principle: if there is any doubt about what a number means, REFUSE with a clear
+// reason rather than guess - a silently wrong location is worse than an error.
+//
+// Handles: decimal pairs (comma, space, semicolon or slash between; European
+// decimal commas), decimal degrees with N/S/E/W letters before OR after each
+// number, in either order (lat/lon or lon/lat when letters are present), degrees +
+// decimal minutes, degrees/minutes/seconds with any of the usual symbols (° º ' ′ ’
+// " ″ ” '' or words/letters like deg min sec, d m s, colons, or plain spaces),
+// copied text with labels or extra words around it, and map links (Google, Apple,
+// OpenStreetMap, geo:). Uses no regex lookbehind (older iPhones can't run it).
+// Returns {lat,lon}, or {error,coordLike}: coordLike means "this was clearly meant
+// as coordinates", so search boxes can show the reason instead of a place search.
+function _coordFail(msg,coordLike){return{error:msg,coordLike:!!coordLike};}
+const COORD_UNREADABLE='Couldn\'t read that as coordinates.';
+const COORD_FORMATS_HINT='You can paste decimal degrees (37.666369,-122.494513), with N/S/E/W (37.6698 N, 122.4283 W or N 37.6698 W 122.4283), degrees/minutes/seconds (37°40\'12"N 122°25\'42"W), or a Google Maps link.';
+function _coordRange(lat,lon){
+  if(!isFinite(lat)||!isFinite(lon))return _coordFail('Those aren\'t valid numbers.',true);
+  if(Math.abs(lat)>90)return _coordFail('Latitude must be between -90 and 90 (found '+lat+').',true);
+  if(Math.abs(lon)>180)return _coordFail('Longitude must be between -180 and 180 (found '+lon+').',true);
+  return{lat:lat===0?0:lat,lon:lon===0?0:lon};
+}
+const _COORD_LINK_RE=/^(https?:\/\/|geo:)|google\.[a-z.]+\/maps|maps\.google\.|goo\.gl\/maps|maps\.app\.goo\.gl|maps\.apple\.com|openstreetmap\.org/i;
+function _coordsFromLink(s){
+  const pick=m=>_coordRange(parseFloat(m[1]),parseFloat(m[2]));
+  // The two original patterns, on the raw text and in the original order, so any
+  // link that worked before gives exactly the same answer.
+  let m=s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if(m)return pick(m);
+  m=s.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if(m)return pick(m);
+  let d=s;
+  try{d=decodeURIComponent(s);}catch(e){}
+  const N='(-?\\d+(?:\\.\\d+)?)';
+  const tries=[
+    new RegExp('[?&](?:q|query|ll|center|destination)=\\s*\\+?'+N+'\\s*,\\s*'+N,'i'),
+    new RegExp('[?&]mlat='+N+'&(?:amp;)?mlon='+N,'i'),
+    new RegExp('#map=\\d+(?:\\.\\d+)?/'+N+'/'+N,'i'),
+    new RegExp('!3d'+N+'!4d'+N),
+    new RegExp('^geo:\\s*'+N+'\\s*,\\s*'+N,'i')
+  ];
+  for(let i=0;i<tries.length;i++){m=d.match(tries[i]);if(m)return pick(m);}
+  if(/maps\.app\.goo\.gl|goo\.gl\/maps/i.test(s))return _coordFail('That\'s a shortened map link, which has no coordinates in it. Open it first, then copy the full address from the browser\'s address bar.',true);
+  if(/google\.[a-z.]+\/maps|maps\.google\.|maps\.apple\.com|openstreetmap\.org|^geo:/i.test(s))return _coordFail('Couldn\'t find coordinates in that map link. Open it in the browser first, then copy the full address.',true);
+  return _coordFail('That\'s a web link, but not a map link I can read coordinates from.',true);
+}
+function _coordsFromText(s0,lenient){
+  let t=s0;
+  t=t.replace(/[  -​ 　]/g,' ');
+  t=t.replace(/[−‐-―]/g,'-');
+  t=t.replace(/[′’‘ʹ´`]/g,"'");
+  t=t.replace(/[″”“ʺ]/g,'"');
+  t=t.replace(/''/g,'"');
+  t=t.replace(/[º˚∘]/g,'°');
+  t=t.replace(/(^|[^A-Za-z])(degrees?|degs?)(?![A-Za-z])/gi,'$1°');
+  t=t.replace(/(^|[^A-Za-z])(minutes?|mins?)(?![A-Za-z])/gi,"$1'");
+  t=t.replace(/(^|[^A-Za-z])(seconds?|secs?)(?![A-Za-z])/gi,'$1"');
+  t=t.replace(/(^|[^A-Za-z])(north|south|east|west)(?![A-Za-z])/gi,(m,a,w)=>a+' '+w[0].toUpperCase()+' ');
+  t=t.replace(/(^|[^A-Za-z])(latitude|longitude|lat|lon|lng|long|gps|coordinates?|coords?|position|location|decimal)(?![A-Za-z])/gi,'$1 ');
+  // 37d40m12s style (lowercase unit letters, only in this exact shape)
+  t=t.replace(/(\d)\s*d\s*(\d+(?:\.\d+)?)\s*m(?:\s*(\d+(?:\.\d+)?)\s*s)?(?![A-Za-z][A-Za-z])/g,(m,a,b,c)=>a+'° '+b+"'"+(c!==undefined?' '+c+'"':''));
+  // text pasted inside quote marks ("37.5, -122.4") - drop the wrapping pair first
+  t=t.trim();
+  if(t.length>2&&((t.charAt(0)==='"'&&t.charAt(t.length-1)==='"')||(t.charAt(0)==="'"&&t.charAt(t.length-1)==="'")))t=t.slice(1,-1);
+  // a ' or " only counts as a minute/second mark straight after a number; anywhere else it's a stray quote
+  t=t.replace(/["']/g,(q,off,str)=>/\d\s*$/.test(str.slice(0,off))?q:' ');
+  t=t.replace(/(\d):(?=\d)/g,'$1 ');
+  t=t.replace(/[:=]/g,' ');
+  t=t.replace(/[()\[\]{}<>]/g,' ');
+  // European decimal commas: only when there is no '.' anywhere and at least two digit,digit commas
+  if(t.indexOf('.')<0&&(t.match(/\d,\d/g)||[]).length>=2)t=t.replace(/(\d),(?=\d)/g,'$1.');
+  t=t.replace(/[\s,;.]+$/,'').replace(/^[\s,;]+/,'');
+  if(lenient){
+    t=t.replace(/[A-Za-z]{2,}/g,' ');
+    t=t.replace(/[^0-9\s.,;'"°NSEWnsew+\-\/|]/g,' ');
+    t=t.replace(/[\s,;.]+$/,'').replace(/^[\s,;]+/,'');
+  }
+  const toks=[];
+  let unknown=false;
+  const re=/([+-]?(?:\d+(?:\.\d+)?|\.\d+))|(°)|(')|(")|([NSEWnsew])|([,;\/|])|(\s+)|([\s\S])/g;
+  let m;
+  while((m=re.exec(t))!==null){
+    if(m[1]!==undefined)toks.push({k:'n',str:m[1],v:parseFloat(m[1]),neg:m[1].charAt(0)==='-',explicit:/^[+-]/.test(m[1])});
+    else if(m[2]!==undefined||m[3]!==undefined||m[4]!==undefined)toks.push({k:'u',u:m[2]||m[3]||m[4]});
+    else if(m[5]!==undefined)toks.push({k:'h',v:m[5].toUpperCase()});
+    else if(m[6]!==undefined)toks.push({k:'s'});
+    else if(m[7]!==undefined){/* whitespace */}
+    else{unknown=true;}
+  }
+  if(unknown)return{unknown:true,error:COORD_UNREADABLE,coordLike:false};
+  while(toks.length&&toks[0].k==='s')toks.shift();
+  while(toks.length&&toks[toks.length-1].k==='s')toks.pop();
+  if(lenient){
+    // Extra words were thrown away to get here, so only accept it when what is left is
+    // unmistakably a coordinate (a degree mark, two hemisphere letters, or exactly two
+    // decimal numbers) - never "exit 37 then 122".
+    const nn=toks.filter(x=>x.k==='n');
+    const ok=toks.some(x=>x.k==='u'&&x.u==='°')||toks.filter(x=>x.k==='h').length>=2||(nn.length===2&&nn.every(x=>x.str.indexOf('.')>=0));
+    if(!ok)return{unknown:true,error:COORD_UNREADABLE,coordLike:false};
+  }
+  const numCount=toks.filter(x=>x.k==='n').length;
+  const coordLike=numCount>=2;
+  const F=msg=>_coordFail(msg,coordLike);
+  const items=[];
+  for(let i=0;i<toks.length;i++){
+    const tk=toks[i];
+    if(tk.k==='u'){
+      const last=items[items.length-1];
+      if(!last||last.k!=='n'||last.unit)return F('A degree, minute or second mark is not next to a number.');
+      last.unit=tk.u;
+    }else items.push(tk);
+  }
+  const numsOf=(a,b)=>items.slice(a,b).filter(x=>x.k==='n');
+  const hIdx=[];
+  items.forEach((x,i)=>{if(x.k==='h')hIdx.push(i);});
+  if(hIdx.length>2)return F('Use only one N or S and one E or W.');
+  // Splits the numbers in items[a..b) into two coordinates: at the one separator if
+  // there is exactly one, otherwise into two equal halves of 1, 2 or 3 numbers.
+  const splitTwo=(a,b)=>{
+    const ns=[],idxs=[],seps=[];
+    for(let i=a;i<b;i++){
+      if(items[i].k==='n'){ns.push(items[i]);idxs.push(i);}
+      else if(items[i].k==='s')seps.push(i);
+    }
+    if(seps.length===1)return[ns.filter((x,j)=>idxs[j]<seps[0]),ns.filter((x,j)=>idxs[j]>seps[0])];
+    if(seps.length===0&&ns.length>=2&&ns.length<=6&&ns.length%2===0){const h=ns.length/2;return[ns.slice(0,h),ns.slice(h)];}
+    return null;
+  };
+  let gA,gB,hA=null,hB=null;
+  if(hIdx.length===0){
+    const sp=splitTwo(0,items.length);
+    if(!sp)return F('Couldn\'t tell where the first number ends and the second begins. Put a comma between latitude and longitude.');
+    gA=sp[0];gB=sp[1];
+  }else if(hIdx.length===2){
+    const i1=hIdx[0],i2=hIdx[1];
+    if(i1===0){
+      const after=numsOf(i2+1,items.length);
+      if(after.length){gA=numsOf(1,i2);gB=after;hA=items[0].v;hB=items[i2].v;}
+      else if(i2===items.length-1){
+        const sp=splitTwo(1,i2);
+        if(!sp)return F('Couldn\'t tell where the first number ends and the second begins. Put a comma between them.');
+        gA=sp[0];gB=sp[1];hA=items[0].v;hB=items[i2].v;
+      }else return F('Couldn\'t tell which N/S/E/W letter goes with which number.');
+    }else if(i2===items.length-1){
+      gA=numsOf(0,i1);gB=numsOf(i1+1,i2);hA=items[i1].v;hB=items[i2].v;
+    }else return F('Couldn\'t tell which N/S/E/W letter goes with which number.');
+    const ax=h=>(h==='N'||h==='S')?'lat':'lon';
+    if(ax(hA)===ax(hB))return F('Use one N or S and one E or W (found two '+(ax(hA)==='lat'?'N/S':'E/W')+' letters).');
+  }else{ // exactly one hemisphere letter
+    const iH=hIdx[0];
+    const sp=splitTwo(0,items.length);
+    if(!sp)return F('Couldn\'t tell where the first number ends and the second begins. Put a comma between them.');
+    gA=sp[0];gB=sp[1];
+    if(!gA.length||!gB.length)return F('Couldn\'t read two coordinates from that.');
+    const firstA=items.indexOf(gA[0]),lastA=items.indexOf(gA[gA.length-1]),firstB=items.indexOf(gB[0]),lastB=items.indexOf(gB[gB.length-1]);
+    let which;
+    if(iH<firstA)which='A';
+    else if(iH>lastB)which='B';
+    else if(iH>lastA&&iH<firstB){
+      const sepBefore=items.slice(lastA+1,iH).some(x=>x.k==='s');
+      which=sepBefore?'B':'A';
+    }else return F('Couldn\'t tell which number the '+items[iH].v+' belongs to.');
+    const other=which==='A'?gB:gA;
+    if(!other.length||!other[0].explicit)return F('Add N/S/E/W to both numbers, or use a minus sign for south or west.');
+    if(which==='A')hA=items[iH].v;else hB=items[iH].v;
+  }
+  if(!gA.length||!gB.length)return F('Couldn\'t read two coordinates from that.');
+  const groupVal=g=>{
+    const n=g.length;
+    if(n<1||n>3)return{error:'Each coordinate can only have degrees, minutes and seconds.'};
+    for(let i=1;i<n;i++)if(g[i].explicit)return{error:'Only the first number of each coordinate can have a minus or plus sign.'};
+    const marks=['°',"'",'"'];
+    for(let i=0;i<n;i++)if(g[i].unit&&g[i].unit!==marks[i])return{error:'The degree, minute and second marks are in the wrong places.'};
+    if(n>=2){
+      if(!/^[+-]?\d+$/.test(g[0].str))return{error:'Degrees must be a whole number when minutes are given.'};
+      if(n===3&&!/^\d+$/.test(g[1].str))return{error:'Minutes must be a whole number when seconds are given.'};
+      if(g[1].v>=60)return{error:'Minutes must be less than 60 (found '+g[1].str+').'};
+      if(n===3&&g[2].v>=60)return{error:'Seconds must be less than 60 (found '+g[2].str+').'};
+    }
+    const deg=Math.abs(g[0].v);
+    const abs=n===1?deg:(deg+g[1].v/60+(n===3?g[2].v/3600:0));
+    return{abs:abs,neg:g[0].neg,multi:n>1};
+  };
+  const vA=groupVal(gA),vB=groupVal(gB);
+  if(vA.error)return F(vA.error);
+  if(vB.error)return F(vB.error);
+  const finish=(gv,hemi)=>{
+    let neg=gv.neg;
+    if(hemi){
+      if(gv.neg&&(hemi==='N'||hemi==='E'))return{error:'A minus sign and the letter '+hemi+' disagree - use one or the other.'};
+      neg=(hemi==='S'||hemi==='W');
+    }
+    let v=neg?-gv.abs:gv.abs;
+    if(gv.multi)v=Math.round(v*1e6)/1e6;
+    return{v:v};
+  };
+  const fA=finish(vA,hA),fB=finish(vB,hB);
+  if(fA.error)return F(fA.error);
+  if(fB.error)return F(fB.error);
+  let lat,lon;
+  if(hA===null&&hB===null){lat=fA.v;lon=fB.v;}
+  else{
+    const aIsLat=hA!==null?(hA==='N'||hA==='S'):!(hB==='N'||hB==='S');
+    if(aIsLat){lat=fA.v;lon=fB.v;}else{lat=fB.v;lon=fA.v;}
+  }
+  if(hA===null&&hB===null&&Math.abs(lat)>90&&Math.abs(lon)<=90)return F('The first number ('+lat+') is over 90, so it can\'t be the latitude. Latitude goes first, then longitude.');
+  return _coordRange(lat,lon);
+}
+function parseCoordsDetailed(raw){
+  const s0=String(raw==null?'':raw).trim();
+  if(!s0)return _coordFail('Nothing entered.',false);
+  if(_COORD_LINK_RE.test(s0))return _coordsFromLink(s0);
+  if(s0.length>200)return _coordFail(COORD_UNREADABLE,false);
+  const strict=_coordsFromText(s0,false);
+  if(!strict.unknown)return strict;
+  const lenient=_coordsFromText(s0,true);
+  if(!lenient.unknown)return lenient;
+  return _coordFail(COORD_UNREADABLE,false);
+}
 function parseCoordsInput(raw){
-  const s=(raw||'').trim();
-  if(!s)return null;
-  // A pasted Google Maps link - checked first and exclusively, since a URL's own
-  // structure (slashes, other numbers in a place ID, etc.) shouldn't be run through
-  // the plain-coordinate patterns below at all. Handles the two common forms: the
-  // @lat,lon,zoom pattern in the URL path, and the ?q=lat,lon query param. A shortened
-  // goo.gl/maps link can't be handled this way - it's a redirect with no coordinates
-  // in the text itself, so it needs to be opened and expanded first.
-  if(/google\.[a-z.]+\/maps|maps\.google\./i.test(s)){
-    const atMatch=s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-    if(atMatch)return{lat:parseFloat(atMatch[1]),lon:parseFloat(atMatch[2])};
-    const qMatch=s.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/);
-    if(qMatch)return{lat:parseFloat(qMatch[1]),lon:parseFloat(qMatch[2])};
-    return null; // recognized as a Maps link but couldn't find coordinates in it - likely a shortened/redirect link
-  }
-  const dec=s.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
-  if(dec)return{lat:parseFloat(dec[1]),lon:parseFloat(dec[2])};
-  const dmsRe=/(-?\d+(?:\.\d+)?)\s*[°ºd]\s*(\d+(?:\.\d+)?)\s*['′m]\s*(?:(\d+(?:\.\d+)?)\s*["″s])?\s*([NSEWnsew])?/g;
-  const parts=[...s.matchAll(dmsRe)];
-  if(parts.length===2){
-    const toDecimal=m=>{
-      const deg=parseFloat(m[1]),min=parseFloat(m[2])||0,sec=parseFloat(m[3])||0;
-      const hemi=(m[4]||'').toUpperCase();
-      let val=Math.abs(deg)+min/60+sec/3600;
-      if(deg<0||hemi==='S'||hemi==='W')val=-val;
-      return Math.round(val*1e6)/1e6; // 6 decimal places (~11cm) — avoids floating-point tails from the /60 and /3600 division
-    };
-    return{lat:toDecimal(parts[0]),lon:toDecimal(parts[1])};
-  }
-  // DMS written with plain spaces instead of °/'/" symbols - e.g. "37 40 12 N 122 25
-  // 42 W". Checked before the decimal+hemisphere fallback below, since without this,
-  // a 3-number DMS sequence would get misread by that fallback as just its last
-  // number+letter, silently dropping the degrees and minutes.
-  const dmsSpaceRe=/(-?\d+)\s+(\d+)\s+(\d+(?:\.\d+)?)\s*([NSEWnsew])/g;
-  const dmsSpaceParts=[...s.matchAll(dmsSpaceRe)];
-  if(dmsSpaceParts.length===2){
-    const toDecimal=m=>{
-      const deg=parseFloat(m[1]),min=parseFloat(m[2]),sec=parseFloat(m[3]);
-      const hemi=m[4].toUpperCase();
-      let val=Math.abs(deg)+min/60+sec/3600;
-      if(hemi==='S'||hemi==='W')val=-val;
-      return Math.round(val*1e6)/1e6;
-    };
-    return{lat:toDecimal(dmsSpaceParts[0]),lon:toDecimal(dmsSpaceParts[1])};
-  }
-  // Plain decimal degrees with a trailing hemisphere letter and no degree symbol at
-  // all - e.g. "32.774 N, 116.476 W" or "32.774N; 116.476W" - a common format from
-  // site-guide sources that isn't decimal-with-comma (no sign, has a letter instead)
-  // and isn't DMS (no minutes/seconds, no degree symbol).
-  const hemiRe=/(-?\d+(?:\.\d+)?)\s*°?\s*([NSEWnsew])/g;
-  const hemiParts=[...s.matchAll(hemiRe)];
-  if(hemiParts.length===2){
-    const toDecimal=m=>{
-      const val=Math.abs(parseFloat(m[1]));
-      const hemi=m[2].toUpperCase();
-      return(hemi==='S'||hemi==='W')?-val:val;
-    };
-    return{lat:toDecimal(hemiParts[0]),lon:toDecimal(hemiParts[1])};
-  }
-  return null;
+  const r=parseCoordsDetailed(raw);
+  return r.error===undefined?{lat:r.lat,lon:r.lon}:null;
 }
 async function openCoordPicker(targetFieldId='esCoords'){
   if(dataSaverActive()){
@@ -9427,6 +9598,18 @@ async function openCoordPicker(targetFieldId='esCoords'){
   async function runCoordSearch(){
     const q=searchInput.value.trim();
     if(!q){searchResults.style.display='none';return;}
+    // Coordinates in any format jump straight there - no network needed, so this works offline too.
+    const cp=parseCoordsDetailed(q);
+    if(cp.error===undefined){
+      map.setView([cp.lat,cp.lon],15);
+      searchResults.style.display='none';
+      return;
+    }
+    if(cp.coordLike){
+      searchResults.style.display='block';
+      searchResults.innerHTML='<div style="padding:12px 16px;color:#7a90a8;font-size:14px">'+escapeNoteHtml(cp.error)+'</div>';
+      return;
+    }
     searchResults.style.display='block';
     searchResults.innerHTML='<div style="padding:12px 16px;color:#7a90a8;font-size:14px">Searching…</div>';
     const ql=q.toLowerCase();
@@ -9483,6 +9666,16 @@ function closeCoordPicker(){
   document.getElementById('coordPickerOverlay').style.display='none';
   if(_coordPickerInstance){_coordPickerInstance.remove();_coordPickerInstance=null;}
 }
+// When the coordinates field loses focus, replace whatever was typed/pasted (any format) with
+// the plain decimal version of what the app understood, so you can see exactly what will be
+// saved. If it can't be read, the text is left alone and Save explains why.
+function esCoordsBlur(){
+  const el=document.getElementById('esCoords');
+  const raw=el.value.trim();
+  const p=raw?parseCoordsInput(raw):null;
+  if(p){const canon=`${p.lat},${p.lon}`;if(raw!==canon)el.value=canon;}
+  esLookupCountry();
+}
 async function esLookupCountry(){
   const coords=document.getElementById('esCoords').value.trim();
   const match=parseCoordsInput(coords);
@@ -9511,8 +9704,8 @@ async function saveSiteEdit(){
   const coordsRaw=document.getElementById('esCoords').value.trim();
   let coords=null;
   if(coordsRaw){
-    const parsed=parseCoordsInput(coordsRaw);
-    if(!parsed){await showAlert('Please enter coordinates as decimal degrees (37.666369,-122.494513), decimal degrees with N/S/E/W (37.6698 N, 122.4283 W), degrees/minutes/seconds (37°40\'12"N, 122°25\'42"W or 37 40 12 N, 122 25 42 W), or paste a Google Maps link.');return;}
+    const parsed=parseCoordsDetailed(coordsRaw);
+    if(parsed.error!==undefined){await showAlert((parsed.error===COORD_UNREADABLE?COORD_UNREADABLE:parsed.error)+' '+COORD_FORMATS_HINT);return;}
     const{lat,lon}=parsed;
     if(lat<-90||lat>90||lon<-180||lon>180){await showAlert('Latitude must be between -90 and 90, longitude between -180 and 180.');return;}
     coords=`${lat},${lon}`;
@@ -10597,7 +10790,7 @@ function wire(){
   document.getElementById('nShareBtn').addEventListener('click',()=>{if(editNoteId)shareNote(editNoteId);});
   document.getElementById('esAddLaunchBtn').addEventListener('click',esAddLaunch);
   document.getElementById('esNewLaunch').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();esAddLaunch();}});
-  document.getElementById('esCoords').addEventListener('blur',esLookupCountry);
+  document.getElementById('esCoords').addEventListener('blur',esCoordsBlur);
   document.getElementById('esPickCoordsBtn').addEventListener('click',()=>openCoordPicker());
   document.getElementById('esLaunchList').addEventListener('click',e=>{
     const del=e.target.closest('[data-esdellaunch]');
