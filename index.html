@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v642';
+const APP_VERSION='v643';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -5309,7 +5309,7 @@ function renderThumbs(containerId,exPhotos,newPhotos,delNewCb){
 // ═══════════════════════════════════════
 function buildGearDropdown(selectId,newInputId,cat){
   const sel=document.getElementById(selectId);if(!sel)return;
-  const names=(gear[cat]||[]).filter(g=>!g._deleted).map(g=>g.name).filter(Boolean);
+  const names=gearOrderedList(cat).map(g=>g.name).filter(Boolean);
   sel.innerHTML=`<option value="">No ${cat} selected</option>`+names.map(n=>`<option value="${n}">${n}</option>`).join('')+`<option value="__new__">+ Add new ${cat}…</option>`;
   sel.style.display='block';
   const ni=document.getElementById(newInputId);if(ni)ni.style.display='none';
@@ -7984,10 +7984,30 @@ function repackStatus(g){
 }
 
 
+// ── Gear order (synced) ──
+// The order you drag gear into is kept as a small list of item ids per category in
+// settings (gearOrderWing / gearOrderHarness / gearOrderReserve), which already sync
+// between devices field by field. The gear records and the stored gear arrays are never
+// reordered - only what is shown is sorted by this list. Items not in the list (e.g. added
+// later, or on another device) show after the listed ones in their stored order.
+const GEAR_ORDER_KEYS={wing:'gearOrderWing',harness:'gearOrderHarness',reserve:'gearOrderReserve'};
+function gearKey(g){return g?(g.uuid?String(g.uuid):(g.id!=null?String(g.id):'')):'';}
+function gearOrderedList(cat){
+  const live=(Array.isArray(gear[cat])?gear[cat]:[]).filter(g=>g&&!g._deleted);
+  const order=settings&&settings[GEAR_ORDER_KEYS[cat]];
+  if(!Array.isArray(order)||!order.length)return live;
+  const rank=new Map();
+  order.forEach((k,i)=>{if(typeof k==='string'&&k&&!rank.has(k))rank.set(k,i);});
+  const listed=[],unlisted=[];
+  live.forEach((g,pos)=>{const r=rank.get(gearKey(g));if(r===undefined)unlisted.push(g);else listed.push({r,pos,g});});
+  listed.sort((a,b)=>a.r-b.r||a.pos-b.pos);
+  return listed.map(x=>x.g).concat(unlisted);
+}
+
 function renderGear(){
   const list=document.getElementById('gearList');if(!list)return;
   list.innerHTML=GEAR_CATS.map(cat=>{
-    const arr=(Array.isArray(gear[cat.id])?gear[cat.id]:[]).filter(g=>!g._deleted);
+    const arr=gearOrderedList(cat.id);
     const hasItems=arr.length>0;
     const items=arr.map((g)=>{
       const i=gear[cat.id].indexOf(g);
@@ -8027,9 +8047,9 @@ function renderGear(){
 function getAllGearItems(){
   const items=[];
   GEAR_CATS.forEach(cat=>{
-    (Array.isArray(gear[cat.id])?gear[cat.id]:[]).forEach((g,i)=>{
-      if(g._deleted)return;
-      items.push({cat:cat.id,idx:i,g});
+    const src=Array.isArray(gear[cat.id])?gear[cat.id]:[];
+    gearOrderedList(cat.id).forEach(g=>{
+      items.push({cat:cat.id,idx:src.indexOf(g),g});
     });
   });
   return items;
@@ -10879,8 +10899,17 @@ function wire(){
     if(!orderedEls.length)return;
     const cat=orderedEls[0].dataset.cat;
     const arr=gear[cat];if(!arr)return;
-    const reordered=orderedEls.map(el=>arr[parseInt(el.dataset.gi)]);
-    gear[cat]=reordered;
+    const field=GEAR_ORDER_KEYS[cat];if(!field)return;
+    // Only the order list is written (to settings, which sync field by field). The gear
+    // records and the gear arrays themselves are not touched.
+    const keys=[];
+    orderedEls.forEach(el=>{const g=arr[parseInt(el.dataset.gi)];const k=gearKey(g);if(k&&g&&!g._deleted&&keys.indexOf(k)<0)keys.push(k);});
+    if(!keys.length)return;
+    const now=Date.now();
+    settings[field]=keys;
+    settings.fieldTs=settings.fieldTs||{};
+    settings.fieldTs[field]=now;
+    settings.updatedAt=now;
     scheduleSave();renderGear();
   });
   // Fixed key->index maps matching CHART_DEFS/BIG_STATS_DEFS inside renderStats —
