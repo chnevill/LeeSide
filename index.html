@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v643';
+const APP_VERSION='v644';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -3672,6 +3672,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
   const _syncT0=performance.now();
   const _ms=t=>Math.round(performance.now()-t);
   logConnection();
+  let _uploadFailed=false; // v644: set when this sync's upload to Drive was attempted and did not land
   try{
     if(!driveFileId){
       const r=await driveReq(`https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE}'+and+trashed=false&fields=files(id)`,{},allowReauth);
@@ -3784,7 +3785,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
         log('localStorage: IndexedDB (no quota limit)');
         _skipWatchVerdict(_skipW);
         log('saving to drive');
-        if(activeFlights().length>0||remoteFlights.length>0)await saveToDrive(allowReauth);
+        if(activeFlights().length>0||remoteFlights.length>0){if((await saveToDrive(allowReauth))===false)_uploadFailed=true;}
         log(`done in ${_ms(_syncT0)} ms`);
       }else{
         let _errBody='';try{_errBody=(await r.text()).replace(/\s+/g,' ').slice(0,300);}catch(e){}
@@ -3793,8 +3794,25 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
         err.isRateLimit=!!r._isRateLimit;
         throw err;
       }
-    }else{await saveToDrive(allowReauth);}
-    if(accessToken){
+    }else{if((await saveToDrive(allowReauth))===false)_uploadFailed=true;}
+    if(accessToken&&_uploadFailed){
+      // v644: everything is saved on this device, but the upload to Drive did not land. Treated like any other
+      // failed sync: retry first (same 5 / 15 / 30 second schedule the download side already uses, and each retry is
+      // a normal full sync), and only after the last retry fails say so - the banner then stays, tapping it syncs
+      // again, and the next successful sync clears it. "Synced" is never shown for an upload that did not land.
+      if(retryCount<3&&canSync(force)){
+        const delay=[5000,15000,30000][retryCount];
+        showSync(`Sync failed — retrying in ${delay/1000}s`,'offline',delay);
+        log(`retry decision: upload did not land, scheduling retry ${retryCount+1} of 3 in ${delay/1000}s`);
+        setTimeout(()=>syncFromDrive(retryCount+1,force,allowReauth,'scheduled retry '+(retryCount+1)),delay);
+      }else if(!canSync(force)){
+        log('retry decision: upload did not land, and sync is no longer allowed (Data Saver or offline) - not retrying');
+        showSync(settings.wifiOnly?'Data Saver on — will sync on WiFi':'Working offline','offline',0);
+      }else{
+        log('retry decision: upload did not land, gave up after '+(retryCount+1)+' attempts');
+        showSync('Saved on this device — upload failed. Tap to retry.','offline',0);
+      }
+    }else if(accessToken){
       showSync('✓ Synced','synced');
     }else if(allowReauth){
       // Group 2, decided 9/28: this is reached by tapping the reconnect
@@ -3863,6 +3881,10 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
 }
 
 async function saveToDrive(allowReauth=false,forceSync=false){
+  // v644: returns false only when an upload was actually attempted and did not land (timeout, or Drive
+  // refused it). Every other outcome - uploaded fine, or deliberately skipped (format guard, Data Saver,
+  // no sign-in) - returns something else, so callers that ignore the result behave exactly as before.
+  let _uploadOk=true;
   if(_formatLocked){log('save to Drive skipped: FORMAT GUARD - Drive is in a newer format than this version understands (saved locally only)');localSave();return;}
   if(!canSync(forceSync)){log(`save to Drive skipped: blocked - online=${navigator.onLine}, wifiOnly=${!!settings.wifiOnly}, onWifi=${isOnWifi()}, force=${forceSync} (saved locally only)`);localSave();return;}
   if(!accessToken){
@@ -3912,6 +3934,7 @@ async function saveToDrive(allowReauth=false,forceSync=false){
       let _upErr='';try{_upErr=(await patchResp.text()).replace(/\s+/g,' ').slice(0,300);}catch(e){}
       log('ERROR: metadata upload failed, status',patchResp.status,'body:',_upErr||'(empty)');
       syncMark=null; // v638: an upload that didn't land means there is no trustworthy record of a completed sync
+      _uploadOk=false; // v644: lets the caller say so instead of showing "Synced"
     }else{
       log(`metadata upload ok (status ${patchResp.status}, ${Math.round(performance.now()-_tUp)} ms)`);
       // v638: remember exactly what this sync left on Drive (the checksum comes back in the upload's own response, so it
@@ -3930,9 +3953,12 @@ async function saveToDrive(allowReauth=false,forceSync=false){
       // button. Update the banner, don't escalate.
       showSync(allowReauth?'Sign in failed — try again later':'Sign-in needed — tap to reconnect','offline',0);
     }
+    return _uploadOk?true:false;
   }catch(e){
     log('ERROR in saveToDrive:',(e&&e.name&&e.name!=='Error'?e.name+': ':'')+(e.message||e));
+    syncMark=null; // v644: same as the refused-upload case above - a timed-out upload is no record of a completed sync
     localSave();
+    return false;
   }
 }
 
