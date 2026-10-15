@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v644';
+const APP_VERSION='v645';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -2133,7 +2133,7 @@ function _syncFingerprint(){
     stamps:[pilotsUpdatedAt,conditionsUpdatedAt,flightTypesUpdatedAt,siteDataUpdatedAt,siteCoordsUpdatedAt,siteNotesUpdatedAt,siteEmergencyUpdatedAt],
     photosOnDrive:uploadedPhotoHashes.slice().sort(),
     photosPending:Object.keys(collectLocalPhotos()).filter(h=>!uploadedPhotoHashes.includes(h)).sort(), // on this device but not yet uploaded
-    photoMode:(isAndroid||!dataSaverActive())?'photos-on':'photos-held' // Data Saver holding photos back vs not
+    photoMode:(!dataSaverActive())?'photos-on':'photos-held' // Data Saver holding photos back vs not
   };
   const out={};let tot='';
   Object.keys(parts).forEach(k=>{const str=JSON.stringify(parts[k],_fpReplacer)||'';out[k]=str.length+':'+_cyrb53(str);tot+=k+'='+out[k]+';';});
@@ -2430,11 +2430,11 @@ async function hydratePhotos(arr){
   if(count>0){log(`photos downloaded: ${count} (${fmtBytes(totalBytes)})`);recordSyncBytes('down',totalBytes);}
 }
 
-// Only ever relevant on iOS with Data Saver on — Android's canSync() already gates the
-// whole sync at once, so photos are never selectively "pending" there; this stays 0 and
-// the banner never shows.
+// Photos held back by Data Saver: always on iPhone/desktop with Data Saver on; on Android only while on
+// cellular with Data Saver on (v645 - a "Sync anyway" on cellular now syncs the text data only; photos
+// wait for Wi-Fi or for Data Saver to be turned off). Stays 0 whenever photos are syncing normally.
 function countPendingPhotos(){
-  if(isAndroid||!dataSaverActive())return 0;
+  if(!dataSaverActive())return 0;
   const toUpload=Object.keys(collectLocalPhotos()).filter(h=>!uploadedPhotoHashes.includes(h)).length;
   let toDownload=0;
   const scan=arr=>(arr||[]).forEach(item=>{
@@ -2452,7 +2452,9 @@ function updatePhotosPendingBanner(){
   if(!el||!text)return;
   const n=countPendingPhotos();
   if(n>0){
-    text.textContent=`Data Saver on — tap to sync ${n} photo${n===1?'':'s'}`;
+    // Android: no override - photos wait for Wi-Fi or Data Saver off. iPhone/desktop: tap to sync them now.
+    text.textContent=isAndroid?`${n} photo${n===1?'':'s'} waiting for Wi-Fi or Data Saver off`:`Data Saver on — tap to sync ${n} photo${n===1?'':'s'}`;
+    el.style.cursor=isAndroid?'default':'pointer';
     el.style.display='flex';
   }else{
     el.style.display='none';
@@ -2463,6 +2465,7 @@ function updatePhotosPendingBanner(){
 // of automatically, then refreshes whatever's currently on screen once photos resolve.
 let _photosSyncInFlight=false;
 async function syncPhotosNow(){
+  if(isAndroid&&dataSaverActive())return; // v645: on Android, Data Saver on cellular never syncs photos - wait for Wi-Fi or turn Data Saver off
   if(_photosSyncInFlight)return;
   if(!navigator.onLine){showSync('Working offline','offline',0);return;}
   if(!accessToken){showSync('Sign-in needed — tap to reconnect','offline',0);return;}
@@ -3723,7 +3726,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
           gear[k]=dedupeGearByName(mergeCollections(localArr,remoteArr,{mergePhotos:true}));
           log('merge gear.'+k+':',_mergeStats(_snapG,remoteArr,gear[k]));
         });
-        if(isAndroid||!dataSaverActive()){
+        if(!dataSaverActive()){
           await hydratePhotos(flights);
           await hydratePhotos(notes);
           await hydratePhotos(gear.wing);
@@ -3768,7 +3771,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
         sites=mergeSites(sites,remoteSites);
         log('merge sites:',_mergeStats(_snapS,remoteSites,sites));
         rebuildSiteViews();
-        if(isAndroid||!dataSaverActive())await hydratePhotos(Object.values(siteNotes));
+        if(!dataSaverActive())await hydratePhotos(Object.values(siteNotes));
         refreshEsThumbsIfOpen();
         if(Array.isArray(remote.pilots)&&(remote.pilotsUpdatedAt||0)>(pilotsUpdatedAt||0)){log(`pilots: replaced local list (${pilots.length}) with remote (${remote.pilots.length})`);pilots=remote.pilots;pilotsUpdatedAt=remote.pilotsUpdatedAt||0;}else log(`pilots: kept local list (${pilots.length}); remote has ${Array.isArray(remote.pilots)?remote.pilots.length:'none'}`);
         if(Array.isArray(remote.conditions)&&remote.conditions.length&&(remote.conditionsUpdatedAt||0)>(conditionsUpdatedAt||0)){log(`conditions: replaced local list (${conditions.length}) with remote (${remote.conditions.length})`);conditions=remote.conditions;conditionsUpdatedAt=remote.conditionsUpdatedAt||0;}
@@ -3785,7 +3788,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
         log('localStorage: IndexedDB (no quota limit)');
         _skipWatchVerdict(_skipW);
         log('saving to drive');
-        if(activeFlights().length>0||remoteFlights.length>0){if((await saveToDrive(allowReauth))===false)_uploadFailed=true;}
+        if(activeFlights().length>0||remoteFlights.length>0){if((await saveToDrive(allowReauth,force))===false)_uploadFailed=true;}
         log(`done in ${_ms(_syncT0)} ms`);
       }else{
         let _errBody='';try{_errBody=(await r.text()).replace(/\s+/g,' ').slice(0,300);}catch(e){}
@@ -3794,7 +3797,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
         err.isRateLimit=!!r._isRateLimit;
         throw err;
       }
-    }else{if((await saveToDrive(allowReauth))===false)_uploadFailed=true;}
+    }else{if((await saveToDrive(allowReauth,force))===false)_uploadFailed=true;} // v645: pass 'force' through - an approved "Sync anyway" on cellular used to download but silently skip the upload
     if(accessToken&&_uploadFailed){
       // v644: everything is saved on this device, but the upload to Drive did not land. Treated like any other
       // failed sync: retry first (same 5 / 15 / 30 second schedule the download side already uses, and each retry is
@@ -3907,7 +3910,7 @@ async function saveToDrive(allowReauth=false,forceSync=false){
   }
   try{
     logConnection();
-    if(isAndroid||!dataSaverActive())await uploadNewPhotos();
+    if(!dataSaverActive())await uploadNewPhotos();
     else log('Data Saver on — skipping photo upload, metadata only');
     const body=JSON.stringify(getSnapshot());
     let _fpAtUpload=null;
@@ -11873,6 +11876,7 @@ function wire(){
         if(accessToken)syncFromDrive(0,false,false,'connection change');
       }else{
         showSync(settings.wifiOnly?'Data Saver on — will sync on WiFi':'Working offline','offline',0);
+        updatePhotosPendingBanner(); // v645: shows the "photos waiting" note as soon as the connection goes to cellular
       }
     });
   }
