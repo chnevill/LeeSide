@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v646';
+const APP_VERSION='v647';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -11973,6 +11973,7 @@ function _backgroundRefreshCheck(){
 }
 document.addEventListener('visibilitychange',async()=>{
   if(document.visibilityState==='hidden'){
+    log('event: app went to background');
     localSave();
     _backgroundRefreshCheck(); // catch a token that's already near-expiry right away
     if(!_bgRefreshInterval)_bgRefreshInterval=setInterval(_backgroundRefreshCheck,5*60*1000); // then keep checking every 5 min for as long as it stays hidden
@@ -12006,10 +12007,29 @@ document.addEventListener('visibilitychange',async()=>{
     showSync(settings.wifiOnly?'Data Saver on — will sync on WiFi':'Working offline','offline',0);
   }
 });
-window.addEventListener('pagehide',()=>localSave());
+window.addEventListener('pagehide',e=>{
+  try{log('event: page closing (kept in memory: '+(e&&e.persisted?'yes':'no')+')');}catch(_){}
+  localSave();
+});
 
 localLoad().then(()=>{
   _dbgSaveOK=true;
+  // Why did the app just start? (added v647) One log line per start so a surprise
+  // restart can be traced. Facts only - no personal content. nav = how the browser
+  // loaded the page (reload / navigate / back_forward); discarded = the browser had
+  // thrown the page out of memory and brought it back; sameSession = this tab's
+  // session storage survived (page reloaded) vs empty (app was closed and relaunched);
+  // updateReload = our own update swap triggered it within the last 20 s.
+  try{
+    let nav='n/a';
+    const ne=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];
+    if(ne&&ne.type)nav=ne.type;
+    let same=false;
+    try{same=!!sessionStorage.getItem('_bootMarker');sessionStorage.setItem('_bootMarker','1');}catch(_){same='n/a';}
+    let upd=false;
+    try{const t=parseInt(sessionStorage.getItem('_swLastReloadAt')||'0',10);upd=!!t&&Date.now()-t<20000;}catch(_){}
+    log(`event: app started | ${APP_VERSION} | nav=${nav} | discarded=${!!document.wasDiscarded} | sameSession=${same} | updateReload=${upd} | ${document.visibilityState}`);
+  }catch(_){}
   document.getElementById('appVersionLabel').textContent=APP_VERSION;
   migrateData();
   applyFontScale(settings.fontScale||1);
