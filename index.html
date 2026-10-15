@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v645';
+const APP_VERSION='v646';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -2433,18 +2433,22 @@ async function hydratePhotos(arr){
 // Photos held back by Data Saver: always on iPhone/desktop with Data Saver on; on Android only while on
 // cellular with Data Saver on (v645 - a "Sync anyway" on cellular now syncs the text data only; photos
 // wait for Wi-Fi or for Data Saver to be turned off). Stays 0 whenever photos are syncing normally.
-function countPendingPhotos(){
-  if(!dataSaverActive())return 0;
-  const toUpload=Object.keys(collectLocalPhotos()).filter(h=>!uploadedPhotoHashes.includes(h)).length;
-  let toDownload=0;
+// Photos this device knows about (live items, not deleted) but has no picture data for yet.
+function countMissingPhotos(){
+  let n=0;
   const scan=arr=>(arr||[]).forEach(item=>{
     if(item._deleted||!item.photos)return;
-    item.photos.forEach(p=>{if(p&&!(typeof p==='object'&&p.deleted)&&!photoDataStr(p))toDownload++;});
+    item.photos.forEach(p=>{if(p&&!(typeof p==='object'&&p.deleted)&&!photoDataStr(p))n++;});
   });
   scan(flights);scan(notes);
   ['wing','harness','reserve'].forEach(k=>scan(gear[k]));
   scan(Object.values(siteNotes));
-  return toUpload+toDownload;
+  return n;
+}
+function countPendingPhotos(){
+  if(!dataSaverActive())return 0;
+  const toUpload=Object.keys(collectLocalPhotos()).filter(h=>!uploadedPhotoHashes.includes(h)).length;
+  return toUpload+countMissingPhotos();
 }
 function updatePhotosPendingBanner(){
   const el=document.getElementById('photosPendingBanner');
@@ -10063,7 +10067,17 @@ async function exportJSON(){
   // Best-effort: resolve any photos still sitting as hash-refs (e.g. never downloaded to
   // this device) before writing the backup, so it's as self-contained as possible rather
   // than silently depending on Drive still holding the originals.
-  if(navigator.onLine&&accessToken){
+  // v646: if Data Saver is holding photos back and some aren't on this device, ask before downloading them
+  // (it can use mobile data) instead of doing it silently. Nothing missing, Data Saver off, or on Wi-Fi
+  // (Android): no question, same as before.
+  let fetchMissing=true;
+  if(navigator.onLine&&accessToken&&dataSaverActive()){
+    const missing=countMissingPhotos();
+    if(missing>0){
+      fetchMissing=await showConfirm(`${missing} photo${missing===1?' isn\'t':'s aren\'t'} on this device yet, and Data Saver is on. Download ${missing===1?'it':'them'} first (may use mobile data), or export without ${missing===1?'it':'them'}?`,'Download first','warn','Export without');
+    }
+  }
+  if(fetchMissing&&navigator.onLine&&accessToken){
     try{
       await hydratePhotos(flights);
       await hydratePhotos(notes);
@@ -10080,7 +10094,9 @@ async function exportJSON(){
   const ts=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0')+'_'+String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0');
   const filename='leeside-backup-'+ts+'.json';
   a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url);
-  showAlert('Backup downloaded: '+filename);
+  // v646: say so when the backup is missing photo images (before, this was silent).
+  const stillMissing=countMissingPhotos();
+  showAlert('Backup downloaded: '+filename+(stillMissing>0?`. Note: ${stillMissing} photo${stillMissing===1?' was':'s were'} not on this device, so the backup has ${stillMissing===1?'its':'their'} references but not the image${stillMissing===1?'':'s'}.`:''));
 }
 async function importSharedNoteText(pasted){
   if(!pasted||!pasted.trim())return;
@@ -12164,10 +12180,11 @@ function showAlert(msg){
     modal.onclick = (e) => { if(e.target === modal) cleanup(); };
   });
 }
-function showConfirm(msg, okLabel, okStyle){
+function showConfirm(msg, okLabel, okStyle, cancelLabel){
   return new Promise(resolve => {
     const modal = document.getElementById('confirmModal');
     document.getElementById('confirmMsg').textContent = msg;
+    if(cancelLabel)document.getElementById('confirmCancel').textContent = cancelLabel; // v646: only when asked for; restored below
     const okBtn = document.getElementById('confirmOK');
     okBtn.textContent = okLabel || 'OK';
     okBtn.style.background = okStyle === 'warn' ? 'var(--gold)' : (okStyle === 'safe' ? '#2e7d32' : 'var(--danger,#e53935)');
@@ -12175,6 +12192,7 @@ function showConfirm(msg, okLabel, okStyle){
     modal.style.display = 'flex';
     const cleanup = (result) => {
       modal.style.display = 'none';
+      if(cancelLabel)document.getElementById('confirmCancel').textContent = 'Cancel';
       resolve(result);
     };
     okBtn.onclick = () => cleanup(true);
