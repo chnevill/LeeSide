@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v650';
+const APP_VERSION='v651';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6951,17 +6951,23 @@ let _siteMapReturnFlightId=null; // set when the map was opened from a flight's 
 // v649: season and time-of-day filter for the kk7 Skyways / Thermals overlays. kk7 publishes each layer as
 // {layer}_{season}_{hours}: season = all | jan | apr | jul | oct (three months centred on that month: Dec-Feb,
 // Mar-May, Jun-Aug, Sep-Nov), hours = all | 04 | 07 | 10 (hours after sunrise). One choice applies to both overlays
-// and to both maps; remembered per device in localStorage only (never synced). Display only - touches no logbook data.
+// and to both maps; not remembered between visits (see v651 below). Display only - touches no logbook data.
 const KK7_SEASONS=['all','jan','apr','jul','oct'];
 const KK7_SEASON_LABEL={all:'All year',jan:'Dec\u2013Feb',apr:'Mar\u2013May',jul:'Jun\u2013Aug',oct:'Sep\u2013Nov'};
 const KK7_TIMES=['all','04','07','10'];
 const KK7_TIME_LABEL={all:'All day','04':'Early day','07':'Mid day','10':'Late day'};
-let _kk7Season='all',_kk7Time='all';
-try{
-  const _s=localStorage.getItem('leeside_kk7Season'),_t=localStorage.getItem('leeside_kk7Time');
-  if(KK7_SEASONS.includes(_s))_kk7Season=_s;
-  if(KK7_TIMES.includes(_t))_kk7Time=_t;
-}catch(e){}
+// v651: no longer remembered between visits. Every time the first overlay is turned on, the filter starts at the current
+// three-month period (by the device's date) and "All day"; the pills still change it from there. Dec-Feb is kk7's 'jan'
+// set, Mar-May 'apr', Jun-Aug 'jul', Sep-Nov 'oct'. The periods are calendar months, so this is the same in either hemisphere.
+function kk7CurrentSeason(){
+  const m=new Date().getMonth(); // 0 = January
+  if(m===11||m<=1)return 'jan';
+  if(m<=4)return 'apr';
+  if(m<=7)return 'jul';
+  return 'oct';
+}
+let _kk7Season=kk7CurrentSeason(),_kk7Time='all';
+function kk7ResetFilter(){_kk7Season=kk7CurrentSeason();_kk7Time='all';}
 function kk7TileUrl(layer){return `https://thermal.kk7.ch/tiles/${layer}_${_kk7Season}_${_kk7Time}/{z}/{x}/{y}.png?src=${location.hostname}`;}
 // Two small pills beside the Thermals and Skyways buttons (tap = next option), joined to them by a bracket; shown only
 // while at least one of the two overlays is on. getLayers() returns [['skyways',layerOrNull],['thermals',layerOrNull]].
@@ -6991,12 +6997,10 @@ function kk7AttachFilter(wrapperId,getLayers){
   function applyToLayers(){getLayers().forEach(([name,layer])=>{if(layer)layer.setUrl(kk7TileUrl(name));});}
   yearPill.addEventListener('click',()=>{
     _kk7Season=KK7_SEASONS[(KK7_SEASONS.indexOf(_kk7Season)+1)%KK7_SEASONS.length];
-    try{localStorage.setItem('leeside_kk7Season',_kk7Season);}catch(e){}
     applyToLayers();refresh();
   });
   dayPill.addEventListener('click',()=>{
     _kk7Time=KK7_TIMES[(KK7_TIMES.indexOf(_kk7Time)+1)%KK7_TIMES.length];
-    try{localStorage.setItem('leeside_kk7Time',_kk7Time);}catch(e){}
     applyToLayers();refresh();
   });
   refresh();
@@ -7134,6 +7138,7 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
       _skywaysLayer=null;
       skywaysBtn.style.background='#fff';skywaysBtn.style.color='#1a2a3a';
     }else{
+      if(!_thermalsLayer)kk7ResetFilter(); // v651: first overlay on = start at the current 3 months, all day
       _skywaysLayer=L.tileLayer(kk7TileUrl('skyways'),{maxNativeZoom:13,tms:true,opacity:0.65}).addTo(map);
       map.attributionControl.addAttribution('<a href="https://thermal.kk7.ch/">thermal.kk7.ch</a> (Skyways) CC-BY-NC-SA');
       skywaysBtn.style.background='#c47800';skywaysBtn.style.color='#fff';
@@ -7158,6 +7163,7 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
       _thermalsLayer=null;
       thermalsBtn.style.background='#fff';thermalsBtn.style.color='#1a2a3a';
     }else{
+      if(!_skywaysLayer)kk7ResetFilter(); // v651: first overlay on = start at the current 3 months, all day
       _thermalsLayer=L.tileLayer(kk7TileUrl('thermals'),{maxNativeZoom:12,tms:true,opacity:0.65}).addTo(map);
       map.attributionControl.addAttribution('<a href="https://thermal.kk7.ch/">thermal.kk7.ch</a> (Thermals) CC-BY-NC-SA');
       thermalsBtn.style.background='#c47800';thermalsBtn.style.color='#fff';
@@ -9619,6 +9625,7 @@ async function openCoordPicker(targetFieldId='esCoords'){
       _skywaysLayer=null;
       skywaysBtn.style.background='#fff';skywaysBtn.style.color='#1a2a3a';
     }else{
+      if(!_thermalsLayer)kk7ResetFilter(); // v651: first overlay on = start at the current 3 months, all day
       _skywaysLayer=L.tileLayer(kk7TileUrl('skyways'),{maxNativeZoom:13,tms:true,opacity:0.65}).addTo(map);
       map.attributionControl.addAttribution('<a href="https://thermal.kk7.ch/">thermal.kk7.ch</a> (Skyways) CC-BY-NC-SA');
       skywaysBtn.style.background='#c47800';skywaysBtn.style.color='#fff';
@@ -9641,6 +9648,7 @@ async function openCoordPicker(targetFieldId='esCoords'){
       _thermalsLayer=null;
       thermalsBtn.style.background='#fff';thermalsBtn.style.color='#1a2a3a';
     }else{
+      if(!_skywaysLayer)kk7ResetFilter(); // v651: first overlay on = start at the current 3 months, all day
       _thermalsLayer=L.tileLayer(kk7TileUrl('thermals'),{maxNativeZoom:12,tms:true,opacity:0.65}).addTo(map);
       map.attributionControl.addAttribution('<a href="https://thermal.kk7.ch/">thermal.kk7.ch</a> (Thermals) CC-BY-NC-SA');
       thermalsBtn.style.background='#c47800';thermalsBtn.style.color='#fff';
