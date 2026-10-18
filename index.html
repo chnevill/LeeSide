@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v647';
+const APP_VERSION='v648';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -3809,7 +3809,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
       // again, and the next successful sync clears it. "Synced" is never shown for an upload that did not land.
       if(retryCount<3&&canSync(force)){
         const delay=[5000,15000,30000][retryCount];
-        showSync(`Sync failed — retrying in ${delay/1000}s`,'offline',delay);
+        // v648: no banner while the automatic retries run - only if the last one fails (below)
         log(`retry decision: upload did not land, scheduling retry ${retryCount+1} of 3 in ${delay/1000}s`);
         setTimeout(()=>syncFromDrive(retryCount+1,force,allowReauth,'scheduled retry '+(retryCount+1)),delay);
       }else if(!canSync(force)){
@@ -3864,7 +3864,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
       syncFromDrive(retryCount+1,force,allowReauth,'auto retry '+(retryCount+1)+' (no token)');
     }else if(retryCount<3&&canSync(force)){
       const delay=e.isRateLimit?[15000,45000,120000][retryCount]:[5000,15000,30000][retryCount];
-      showSync(e.isRateLimit?`Drive rate limit hit — retrying in ${delay/1000}s`:`Sync failed — retrying in ${delay/1000}s`,'offline',delay);
+      // v648: no banner while the automatic retries run - only if the last one fails (below)
       log(`retry decision: scheduling retry ${retryCount+1} of 3 in ${delay/1000}s`);
       setTimeout(()=>syncFromDrive(retryCount+1,force,allowReauth,'scheduled retry '+(retryCount+1)),delay);
     }else if(!canSync(force)){
