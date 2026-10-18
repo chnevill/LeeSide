@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v648';
+const APP_VERSION='v649';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6948,6 +6948,56 @@ async function exportCurrentScreenAsPng(){
 
 let _siteMapReturnSite=null;
 let _siteMapReturnFlightId=null; // set when the map was opened from a flight's OTL launch point - returns to that flight's detail instead of a site note
+// v649: season and time-of-day filter for the kk7 Skyways / Thermals overlays. kk7 publishes each layer as
+// {layer}_{season}_{hours}: season = all | jan | apr | jul | oct (three months centred on that month: Dec-Feb,
+// Mar-May, Jun-Aug, Sep-Nov), hours = all | 04 | 07 | 10 (hours after sunrise). One choice applies to both overlays
+// and to both maps; remembered per device in localStorage only (never synced). Display only - touches no logbook data.
+const KK7_SEASONS=['all','jan','apr','jul','oct'];
+const KK7_SEASON_LABEL={all:'All year',jan:'Dec\u2013Feb',apr:'Mar\u2013May',jul:'Jun\u2013Aug',oct:'Sep\u2013Nov'};
+const KK7_TIMES=['all','04','07','10'];
+const KK7_TIME_LABEL={all:'All day','04':'Early day','07':'Mid day','10':'Late day'};
+let _kk7Season='all',_kk7Time='all';
+try{
+  const _s=localStorage.getItem('leeside_kk7Season'),_t=localStorage.getItem('leeside_kk7Time');
+  if(KK7_SEASONS.includes(_s))_kk7Season=_s;
+  if(KK7_TIMES.includes(_t))_kk7Time=_t;
+}catch(e){}
+function kk7TileUrl(layer){return `https://thermal.kk7.ch/tiles/${layer}_${_kk7Season}_${_kk7Time}/{z}/{x}/{y}.png?src=${location.hostname}`;}
+// Two small pills beside the Thermals and Skyways buttons (tap = next option), joined to them by a bracket; shown only
+// while at least one of the two overlays is on. getLayers() returns [['skyways',layerOrNull],['thermals',layerOrNull]].
+function kk7AttachFilter(wrapperId,getLayers){
+  const wrap=document.getElementById(wrapperId);
+  const mk=(bottom)=>{
+    const b=document.createElement('button');b.type='button';
+    b.style.cssText='position:absolute;left:64px;bottom:'+bottom+'px;z-index:1000;height:32px;min-width:78px;padding:0 12px;border-radius:16px;font-size:13px;font-weight:700;display:none;align-items:center;justify-content:center;border:1px solid rgba(0,0,0,0.15);box-shadow:0 2px 8px rgba(0,0,0,.4);white-space:nowrap';
+    wrap.appendChild(b);return b;
+  };
+  const br=document.createElement('div');
+  br.style.cssText='position:absolute;left:56px;bottom:85px;width:8px;height:50px;box-sizing:border-box;border:2px solid #c47800;border-left:none;border-radius:0 8px 8px 0;z-index:1000;display:none;pointer-events:none';
+  wrap.appendChild(br);
+  const yearPill=mk(119),dayPill=mk(69);
+  function paint(b,on,text){b.textContent=text;b.style.background=on?'#c47800':'#fff';b.style.color=on?'#fff':'#1a2a3a';}
+  function refresh(){
+    const layers=getLayers();
+    const anyOn=layers.some(l=>l[1]);
+    [yearPill,dayPill,br].forEach(e=>e.style.display=anyOn?(e===br?'block':'flex'):'none');
+    paint(yearPill,_kk7Season!=='all',KK7_SEASON_LABEL[_kk7Season]);
+    paint(dayPill,_kk7Time!=='all',KK7_TIME_LABEL[_kk7Time]);
+  }
+  function applyToLayers(){getLayers().forEach(([name,layer])=>{if(layer)layer.setUrl(kk7TileUrl(name));});}
+  yearPill.addEventListener('click',()=>{
+    _kk7Season=KK7_SEASONS[(KK7_SEASONS.indexOf(_kk7Season)+1)%KK7_SEASONS.length];
+    try{localStorage.setItem('leeside_kk7Season',_kk7Season);}catch(e){}
+    applyToLayers();refresh();
+  });
+  dayPill.addEventListener('click',()=>{
+    _kk7Time=KK7_TIMES[(KK7_TIMES.indexOf(_kk7Time)+1)%KK7_TIMES.length];
+    try{localStorage.setItem('leeside_kk7Time',_kk7Time);}catch(e){}
+    applyToLayers();refresh();
+  });
+  refresh();
+  return {refresh};
+}
 async function openSiteMapView(focusSite,returnToNote,focusPoint){
   if(dataSaverActive()){
     if(!await showConfirm(dataSaverConfirmMsg('Maps'),'Open anyway','warn'))return;
@@ -7080,11 +7130,12 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
       _skywaysLayer=null;
       skywaysBtn.style.background='#fff';skywaysBtn.style.color='#1a2a3a';
     }else{
-      _skywaysLayer=L.tileLayer(`https://thermal.kk7.ch/tiles/skyways_all_all/{z}/{x}/{y}.png?src=${location.hostname}`,{maxNativeZoom:13,tms:true,opacity:0.65}).addTo(map);
+      _skywaysLayer=L.tileLayer(kk7TileUrl('skyways'),{maxNativeZoom:13,tms:true,opacity:0.65}).addTo(map);
       map.attributionControl.addAttribution('<a href="https://thermal.kk7.ch/">thermal.kk7.ch</a> (Skyways) CC-BY-NC-SA');
       skywaysBtn.style.background='#c47800';skywaysBtn.style.color='#fff';
       if(_thermalsLayer)_thermalsLayer.bringToFront();
     }
+    _kk7f.refresh();
   });
 
   // Thermals toggle (KK7 thermal probability heat-map) — same provider, same
@@ -7103,11 +7154,14 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
       _thermalsLayer=null;
       thermalsBtn.style.background='#fff';thermalsBtn.style.color='#1a2a3a';
     }else{
-      _thermalsLayer=L.tileLayer(`https://thermal.kk7.ch/tiles/thermals_all_all/{z}/{x}/{y}.png?src=${location.hostname}`,{maxNativeZoom:12,tms:true,opacity:0.65}).addTo(map);
+      _thermalsLayer=L.tileLayer(kk7TileUrl('thermals'),{maxNativeZoom:12,tms:true,opacity:0.65}).addTo(map);
       map.attributionControl.addAttribution('<a href="https://thermal.kk7.ch/">thermal.kk7.ch</a> (Thermals) CC-BY-NC-SA');
       thermalsBtn.style.background='#c47800';thermalsBtn.style.color='#fff';
     }
+    _kk7f.refresh();
   });
+
+  const _kk7f=kk7AttachFilter('siteMapWrapper',()=>[['skyways',_skywaysLayer],['thermals',_thermalsLayer]]);
 
   // Layer picker popup
   const layerMenu=document.createElement('div');
@@ -9561,11 +9615,12 @@ async function openCoordPicker(targetFieldId='esCoords'){
       _skywaysLayer=null;
       skywaysBtn.style.background='#fff';skywaysBtn.style.color='#1a2a3a';
     }else{
-      _skywaysLayer=L.tileLayer(`https://thermal.kk7.ch/tiles/skyways_all_all/{z}/{x}/{y}.png?src=${location.hostname}`,{maxNativeZoom:13,tms:true,opacity:0.65}).addTo(map);
+      _skywaysLayer=L.tileLayer(kk7TileUrl('skyways'),{maxNativeZoom:13,tms:true,opacity:0.65}).addTo(map);
       map.attributionControl.addAttribution('<a href="https://thermal.kk7.ch/">thermal.kk7.ch</a> (Skyways) CC-BY-NC-SA');
       skywaysBtn.style.background='#c47800';skywaysBtn.style.color='#fff';
       if(_thermalsLayer)_thermalsLayer.bringToFront();
     }
+    _kk7f.refresh();
   });
 
   let _thermalsLayer=null;
@@ -9582,11 +9637,14 @@ async function openCoordPicker(targetFieldId='esCoords'){
       _thermalsLayer=null;
       thermalsBtn.style.background='#fff';thermalsBtn.style.color='#1a2a3a';
     }else{
-      _thermalsLayer=L.tileLayer(`https://thermal.kk7.ch/tiles/thermals_all_all/{z}/{x}/{y}.png?src=${location.hostname}`,{maxNativeZoom:12,tms:true,opacity:0.65}).addTo(map);
+      _thermalsLayer=L.tileLayer(kk7TileUrl('thermals'),{maxNativeZoom:12,tms:true,opacity:0.65}).addTo(map);
       map.attributionControl.addAttribution('<a href="https://thermal.kk7.ch/">thermal.kk7.ch</a> (Thermals) CC-BY-NC-SA');
       thermalsBtn.style.background='#c47800';thermalsBtn.style.color='#fff';
     }
+    _kk7f.refresh();
   });
+
+  const _kk7f=kk7AttachFilter('coordPickerWrapper',()=>[['skyways',_skywaysLayer],['thermals',_thermalsLayer]]);
 
   const layerMenu=document.createElement('div');
   layerMenu.id='coordPickerLayerMenu';
