@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v649';
+const APP_VERSION='v650';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6967,12 +6967,16 @@ function kk7TileUrl(layer){return `https://thermal.kk7.ch/tiles/${layer}_${_kk7S
 // while at least one of the two overlays is on. getLayers() returns [['skyways',layerOrNull],['thermals',layerOrNull]].
 function kk7AttachFilter(wrapperId,getLayers){
   const wrap=document.getElementById(wrapperId);
+  // v650: a map is rebuilt every time it opens, and the pills from the previous visit used to be left behind (stuck on
+  // screen with the layers off, and piling up one more pair per visit). Remove any earlier ones before making new ones.
+  wrap.querySelectorAll('[data-kk7filter]').forEach(e=>e.remove());
   const mk=(bottom)=>{
-    const b=document.createElement('button');b.type='button';
+    const b=document.createElement('button');b.type='button';b.dataset.kk7filter='1';
     b.style.cssText='position:absolute;left:64px;bottom:'+bottom+'px;z-index:1000;height:32px;min-width:78px;padding:0 12px;border-radius:16px;font-size:13px;font-weight:700;display:none;align-items:center;justify-content:center;border:1px solid rgba(0,0,0,0.15);box-shadow:0 2px 8px rgba(0,0,0,.4);white-space:nowrap';
     wrap.appendChild(b);return b;
   };
   const br=document.createElement('div');
+  br.dataset.kk7filter='1';
   br.style.cssText='position:absolute;left:56px;bottom:85px;width:8px;height:50px;box-sizing:border-box;border:2px solid #c47800;border-left:none;border-radius:0 8px 8px 0;z-index:1000;display:none;pointer-events:none';
   wrap.appendChild(br);
   const yearPill=mk(119),dayPill=mk(69);
