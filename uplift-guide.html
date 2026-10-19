@@ -392,7 +392,7 @@ mark{background:rgba(242,169,46,0.35);color:var(--text);border-radius:3px;paddin
       <div class="callout-num">4</div>
       <div class="callout-body">
         <div class="callout-title">Map View</div>
-        <div class="callout-desc">Tap the <strong>🗺️ map icon</strong> next to search to see every site plotted on one full-screen map — search for a place by name, switch between <strong>Standard, Topo, Dark, Light and Satellite</strong> layers, or toggle on <strong>🪂 Skyways</strong> to see where pilots actually fly based on real flight-track data, and <strong>☀️ Thermals</strong> for a heat-map of where lift tends to actually form. The map remembers your last layer choice and exactly where you left it, per device, so it picks up where you left off instead of resetting every time. Tap a marker to jump straight to that site's detail.</div>
+        <div class="callout-desc">Tap the <strong>🗺️ map icon</strong> next to search to see every site plotted on one full-screen map — search for a place by name, switch between <strong>Standard, Topo, Dark, Light and Satellite</strong> layers, or toggle on <strong>🪂 Skyways</strong> to see where pilots actually fly based on real flight-track data, and <strong>☀️ Thermals</strong> for a heat-map of where lift tends to actually form. The map remembers your last layer choice and exactly where you left it, per device, so it picks up where you left off instead of resetting every time. Tap a marker to jump straight to that site's detail.<br><br><strong>Season and time of day:</strong> while Skyways or Thermals is on, two small pills appear beside those buttons. The top one steps through <strong>All year, Dec–Feb, Mar–May, Jun–Aug and Sep–Nov</strong>; the bottom one through <strong>All day, Early day, Mid day and Late day</strong> (roughly 4, 7 and 10 hours after sunrise). Tap a pill to move to the next choice — it turns orange while it's filtering. It's a quick way to see which seasons and times of day are actually flyable. The filter applies to both layers, and starts at the current three months and all day every time you turn the first layer on. The same buttons are on the map you use to pick a spot in Edit Site.</div>
       </div>
     </div>
   </div>
@@ -637,7 +637,7 @@ mark{background:rgba(242,169,46,0.35);color:var(--text);border-radius:3px;paddin
       <div class="callout-num">2</div>
       <div class="callout-body">
         <div class="callout-title">Top item = default in Log Flight</div>
-        <div class="callout-desc">When logging a flight, the <strong>first item in each gear category is pre-selected.</strong> Long-press and drag an item to reorder — put your main wing at the top.</div>
+        <div class="callout-desc">When logging a flight, the <strong>first item in each gear category is pre-selected.</strong> Long-press and drag an item to reorder — put your main wing at the top. The order you choose follows you to your other devices.</div>
       </div>
     </div>
     <div class="callout">
@@ -757,7 +757,7 @@ mark{background:rgba(242,169,46,0.35);color:var(--text);border-radius:3px;paddin
         <div class="callout-num">1</div>
         <div class="callout-body">
           <div class="callout-title">Data Saver</div>
-          <div class="callout-desc"><strong>This setting is per-device</strong> — it doesn't sync between your phone, tablet, or computer, so you can have it on where it matters and off where it doesn't. New phones (Android or iPhone) start with it <strong>on</strong> by default; a new computer starts with it <strong>off</strong>, since a desktop is essentially never on a genuine cellular connection. Change it any time in Settings on each device.<br><br>On <strong>Android</strong>, it pauses <strong>all</strong> syncing to Google Drive — flights, notes, settings and photos alike — whenever you're genuinely on cellular data, since Android can tell the difference; turn it off to sync freely on any connection. On <strong>iPhone and desktop browsers</strong>, which have no way to tell cellular from WiFi, turning it on works differently: your <strong>flights, notes and settings still keep syncing normally</strong> no matter what — only <strong>photos</strong> get held back. When photos are waiting, a banner appears — <strong>"Data Saver on — tap to sync N photos"</strong> — tap it any time to sync them on demand.<br><br>On every platform, embedded videos in notes show a "tap to load" warning instead of auto-playing while Data Saver is on, and Windy/Google Earth links ask first too; the Airspace link opens directly either way. Site weather always updates normally regardless, since it's a tiny, separate request.</div>
+          <div class="callout-desc"><strong>This setting is per-device</strong> — it doesn't sync between your phone, tablet, or computer, so you can have it on where it matters and off where it doesn't. New phones (Android or iPhone) start with it <strong>on</strong> by default; a new computer starts with it <strong>off</strong>, since a desktop is essentially never on a genuine cellular connection. Change it any time in Settings on each device.<br><br>On <strong>Android</strong>, it pauses <strong>automatic</strong> syncing to Google Drive — flights, notes, settings and photos alike — whenever you're genuinely on cellular data, since Android can tell the difference; turn it off to sync freely on any connection. If you do need to sync on cellular, pull down on the logbook or choose <strong>☁ Sync now</strong> from your profile menu, then choose <strong>Sync anyway</strong>: your flights, notes and settings sync (both ways), but <strong>photos are never sent or fetched on cellular</strong>. A banner — <strong>"N photos waiting for Wi-Fi or Data Saver off"</strong> — shows what's held back; they sync by themselves once you're on Wi-Fi, or as soon as you turn Data Saver off. On <strong>iPhone and desktop browsers</strong>, which have no way to tell cellular from WiFi, turning it on works differently: your <strong>flights, notes and settings still keep syncing normally</strong> no matter what — only <strong>photos</strong> get held back. When photos are waiting, a banner appears — <strong>"Data Saver on — tap to sync N photos"</strong> — tap it any time to sync them on demand.<br><br>On every platform, embedded videos in notes show a "tap to load" warning instead of auto-playing while Data Saver is on, and Windy/Google Earth links ask first too; the Airspace link opens directly either way. Site weather always updates normally regardless, since it's a tiny, separate request.</div>
         </div>
       </div>
       <div class="callout">
@@ -813,7 +813,7 @@ mark{background:rgba(242,169,46,0.35);color:var(--text);border-radius:3px;paddin
         <div class="callout-num">9</div>
         <div class="callout-body">
           <div class="callout-title">Export / Import backup (JSON)</div>
-          <div class="callout-desc"><strong>Export regularly</strong> to keep a backup. The JSON file contains everything — all flights, notes, gear, photos and settings. Import it to restore on any device.</div>
+          <div class="callout-desc"><strong>Export regularly</strong> to keep a backup. The JSON file contains everything — all flights, notes, gear, photos and settings. Import it to restore on any device.<br><br>If Data Saver is holding back photos that aren't on this device yet, LeeSide asks before exporting: <strong>Download first</strong> (fetches them, which may use mobile data) or <strong>Export without</strong>. Whenever a backup is missing photo images, the confirmation tells you how many — the photo entries are still in the file, but not the pictures themselves, so for a complete backup export on Wi-Fi.</div>
         </div>
       </div>
       <div class="callout">
@@ -845,6 +845,11 @@ mark{background:rgba(242,169,46,0.35);color:var(--text);border-radius:3px;paddin
       <div class="tip-icon">📵</div>
       <div class="tip-title">Flying somewhere remote?</div>
       <div class="tip-desc">Sign in once online. LeeSide works fully offline — log flights normally with no signal. Everything syncs automatically on the drive home. One exception: avoid tapping <strong>Sign Out</strong> while you're out of signal — you'll need signal again to sign back in before you can open your logbook.</div>
+    </div>
+    <div class="tip">
+      <div class="tip-icon">🔄</div>
+      <div class="tip-title">Sync banner showing?</div>
+      <div class="tip-desc">Every edit is saved on your phone first, so your data is safe even when a sync doesn't go through. If one fails, LeeSide quietly retries three more times (after 5, 15 and 30 seconds) with no banner. Only if all of them fail does a banner appear — <strong>tap it to try again</strong>.</div>
     </div>
     <div class="tip">
       <div class="tip-icon">💾</div>
