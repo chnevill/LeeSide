@@ -142,6 +142,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);fon
 #content::-webkit-scrollbar{display:none}
 .screen{display:none;padding:0 20px 110px}
 .screen.active{display:block}
+/* v654: portrait only (the variable is only set there) - a short page, e.g. Gear after deleting items, must still be tall enough to scroll up past the stats pills and hide them */
+#content .screen.active{min-height:var(--screenMin,0px)}
 .sec-label{font-size:var(--fs-lbl);font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin:20px 0 10px}
 
 /* Landscape */
@@ -1138,7 +1140,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v653';
+const APP_VERSION='v654';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -10394,8 +10396,24 @@ function syncTopbarLayoutForOrientation(){
     topbar.insertBefore(strip,banner);
     topbar.insertBefore(nav,banner.nextSibling);
   }
+  _syncScreenMin();
   _syncNavGradientPosition();
   _watchNavGradientLayout();
+}
+// v654: in portrait the stats pills scroll with the page, and hiding them means scrolling
+// past them. A short page (few items) is not tall enough for that, so each page gets a
+// minimum height = the visible area minus the nav buttons: then page + pills + nav is always
+// at least one screen plus the pills, which is exactly enough room to scroll them out of view.
+function _syncScreenMin(){
+  try{
+    const content=document.getElementById('content');
+    const strip=document.getElementById('statsStrip');
+    const nav=document.getElementById('nav');
+    if(!content||!strip||!nav)return;
+    if(window.matchMedia('(orientation: portrait)').matches&&content.contains(strip)){
+      content.style.setProperty('--screenMin',Math.max(0,content.clientHeight-nav.offsetHeight)+'px');
+    }else content.style.removeProperty('--screenMin');
+  }catch(e){}
 }
 // See the long comment on #nav's CSS rule for the full reasoning. Makes
 // #nav's gradient a plain "window" into a viewport-sized image, positioned
@@ -11998,11 +12016,14 @@ function wire(){
   // Covers iOS Safari's dynamic toolbar changing window.innerHeight without
   // necessarily firing a scroll event, plus ordinary resize/rotation.
   window.addEventListener('resize',_scheduleNavGradientSync,{passive:true});
+  window.addEventListener('resize',_syncScreenMin,{passive:true}); // v654
   // visualViewport fires specifically for on-screen size changes (address
   // bar collapsing, etc.) more reliably than plain window resize does for
   // this exact case on some mobile browsers - cheap to also listen on it
   // where it exists.
   if(window.visualViewport)window.visualViewport.addEventListener('resize',_scheduleNavGradientSync,{passive:true});
+  if(window.visualViewport)window.visualViewport.addEventListener('resize',_syncScreenMin,{passive:true}); // v654
+  try{new ResizeObserver(_syncScreenMin).observe(document.getElementById('content'));}catch(e){} // v654
 }
 
 // Track current detail flight id
