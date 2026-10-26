@@ -1138,7 +1138,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v651';
+const APP_VERSION='v653';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -2184,11 +2184,12 @@ function _skipWatchVerdict(w){
     else if(!m||w.peek.md5!==m.md5)reasons.push('the file on Drive is different from what this device last left there');
     // Reality check: did this full sync actually change anything on this device?
     const after=_syncFingerprint();
-    const changed=_fpDiffParts(w.fp,after);
+    // v652: photoMode is the connection (Data Saver on/off), not data - it can flip mid-sync when the phone hops between Wi-Fi and cellular, which is not a change this sync made
+    const changed=_fpDiffParts(w.fp,after).filter(k=>k!=='photoMode');
     const unresolved=(()=>{try{return _collectUnresolvedPhotos().length;}catch(e){return '?';}})();
     if(!reasons.length){
-      const kb=m&&m.size?Math.round(m.size*2/1024):'?';
-      log(`skip-watch: WOULD HAVE SKIPPED this sync (nothing changed on this device, Drive file identical to what we left, last full sync ${Math.round((Date.now()-m.at)/60000)} min ago; would have saved ~${kb} KB; photos not yet on this device: ${unresolved}). Skipping is OFF in v638 - the full sync is running normally.`);
+      const kb=m&&m.size?Math.round(m.size/1024):'?'; // v652: one-way size (was doubled)
+      log(`skip-watch: WOULD HAVE SKIPPED this sync (nothing changed on this device, Drive file identical to what we left, last full sync ${Math.round((Date.now()-m.at)/60000)} min ago; would have saved the ~${kb} KB download (and the same again if this sync would also have uploaded); photos not yet on this device: ${unresolved}). Skipping is OFF in v638 - the full sync is running normally.`);
       log(changed.length?`skip-watch: reality check - PREDICTION WRONG: this full sync changed ${changed.join(', ')} on this device`:'skip-watch: reality check - prediction CORRECT: this full sync changed nothing on this device');
     }else{
       log('skip-watch: would NOT skip - '+reasons.join('; '));
@@ -5348,6 +5349,19 @@ function buildGearDropdown(selectId,newInputId,cat){
   const ni=document.getElementById(newInputId);if(ni)ni.style.display='none';
   if(names.length>=1)sel.value=names[0];
 }
+// v653: editing a flight must show the gear that flight was logged with, even if that
+// gear has since been deleted from the gear list (worn out, replaced). The dropdown only
+// offers current gear, so a deleted name is added as an option just for this form, and a
+// flight logged with no gear of that kind stays on "none" instead of the list's first item.
+function selectFlightGear(selId,val){
+  const sel=document.getElementById(selId);if(!sel)return;
+  if(!val){sel.value='';return;}
+  if(![...sel.options].some(o=>o.value===val)){
+    const o=document.createElement('option');o.value=val;o.textContent=val;
+    sel.insertBefore(o,sel.lastElementChild); // before the "+ Add new..." option
+  }
+  sel.value=val;
+}
 async function gearSelChange(sel,newInputId,label){
   const ni=document.getElementById(newInputId);
   if(sel.value==='__new__'){
@@ -5478,11 +5492,11 @@ async function openFlightModal(editId){
     launchType=f.launchType||'forward';
     document.querySelectorAll('#launchTypeGroup .toggle-btn').forEach(b=>b.classList.toggle('active',b.dataset.lt===launchType));
     buildGearDropdown('fWingSelect','fWingNew','wing');
-    if(f.wing){const sel=document.getElementById('fWingSelect');if([...sel.options].some(o=>o.value===f.wing))sel.value=f.wing;}
+    selectFlightGear('fWingSelect',f.wing);
     buildGearDropdown('fHarnessSelect','fHarnessNew','harness');
-    if(f.harness){const sel=document.getElementById('fHarnessSelect');if([...sel.options].some(o=>o.value===f.harness))sel.value=f.harness;}
+    selectFlightGear('fHarnessSelect',f.harness);
     buildGearDropdown('fReserveSelect','fReserveNew','reserve');
-    if(f.reserve){const sel=document.getElementById('fReserveSelect');if([...sel.options].some(o=>o.value===f.reserve))sel.value=f.reserve;}
+    selectFlightGear('fReserveSelect',f.reserve);
     launchR=f.launchR||0;flightR=f.flightR||0;landingR=f.landingR||0;
     setStars('srLaunch',launchR);setStars('srFlight',flightR);setStars('srLanding',landingR);
     selPilots=f.flyingWith?[...f.flyingWith]:[];
@@ -5534,9 +5548,13 @@ async function saveFlight(){
   // called from the sync merge below) is what actually closes the real risk -
   // two devices independently quick-adding the same name before ever syncing
   // will always mint two different uuids no matter when either is assigned.
-  if(wing&&!gear.wing.find(g=>g.name===wing&&!g._deleted))gear.wing.push({id:uid(),uuid:uid(),name:wing,updatedAt:Date.now()});
-  if(harness&&!gear.harness.find(g=>g.name===harness&&!g._deleted))gear.harness.push({id:uid(),uuid:uid(),name:harness,updatedAt:Date.now()});
-  if(reserve&&!gear.reserve.find(g=>g.name===reserve&&!g._deleted))gear.reserve.push({id:uid(),uuid:uid(),name:reserve,updatedAt:Date.now()});
+  // v653: when editing, a choice that is unchanged from what the flight already had is never
+  // added back to the gear list - that gear may have been deleted on purpose.
+  const _exFlight=editFlightId?flights.find(x=>x.id===editFlightId):null;
+  const _unchanged=(k,n)=>!!(_exFlight&&n&&_exFlight[k]===n);
+  if(wing&&!_unchanged('wing',wing)&&!gear.wing.find(g=>g.name===wing&&!g._deleted))gear.wing.push({id:uid(),uuid:uid(),name:wing,updatedAt:Date.now()});
+  if(harness&&!_unchanged('harness',harness)&&!gear.harness.find(g=>g.name===harness&&!g._deleted))gear.harness.push({id:uid(),uuid:uid(),name:harness,updatedAt:Date.now()});
+  if(reserve&&!_unchanged('reserve',reserve)&&!gear.reserve.find(g=>g.name===reserve&&!g._deleted))gear.reserve.push({id:uid(),uuid:uid(),name:reserve,updatedAt:Date.now()});
   const siteSelEl=document.getElementById('fSiteSelect');
   const selectedSiteOpt=(siteSelEl&&siteSelEl.style.display!=='none')?siteSelEl.options[siteSelEl.selectedIndex]:null;
   const siteWasDeleted=!!(selectedSiteOpt&&selectedSiteOpt.dataset.deleted==='true');
