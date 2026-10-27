@@ -1140,7 +1140,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v655';
+const APP_VERSION='v657';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -8834,36 +8834,64 @@ function backfillSiteCountries(){
   });
 }
 
+// v656: the hospital lookup used one free public server (overpass-api.de). When that server was
+// slow or overloaded, the app treated "no answer" exactly like "no hospitals nearby" and said so.
+// Now: if a server does not answer (error or 10 s with no reply) the next one is tried, a server
+// that failed is not retried for the rest of this lookup, and if NO server answers at all that is
+// reported as a failure (_hospitalLookupFailed) instead of "none found". A search area with no
+// hospitals in it is still "none found" - that is only decided when a server really answered.
+// Note: your location is sent to whichever server answers, the same as before with the first one.
+const OVERPASS_SERVERS=[
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter'
+];
+let _hospitalLookupFailed=false;
 async function findNearestHospitals(lat,lon){
+  _hospitalLookupFailed=false;
   const radii=[25000,75000,200000]; // meters: 25km, then 75km, then 200km if nothing found
+  const live=OVERPASS_SERVERS.slice(); // servers that have not failed during this lookup
+  let answered=false;
   for(const radius of radii){
-    try{
-      const query=`[out:json][timeout:15];(node["amenity"="hospital"](around:${radius},${lat},${lon});way["amenity"="hospital"](around:${radius},${lat},${lon}););out center 30;`;
-      const url='https://overpass-api.de/api/interpreter?data='+encodeURIComponent(query);
-      const r=await fetchWithTimeout(url,{},15000);
-      if(!r.ok)continue;
-      const j=await r.json();
-      if(!j.elements||!j.elements.length)continue;
-      const results=[];
-      for(const el of j.elements){
-        const elLat=el.lat||(el.center&&el.center.lat);
-        const elLon=el.lon||(el.center&&el.center.lon);
-        if(elLat==null||elLon==null)continue;
-        const d=haversineKm(lat,lon,elLat,elLon);
-        const tags=el.tags||{};
-        const name=tags.name||'Hospital (name unavailable)';
-        const addrParts=[tags['addr:housenumber'],tags['addr:street'],tags['addr:city']].filter(Boolean);
-        const address=addrParts.length?addrParts.join(' '):(tags['addr:full']||'');
-        const phone=tags.phone||tags['contact:phone']||'';
-        results.push({name,address,phone,lat:elLat,lon:elLon,distanceKm:d});
+    const query=`[out:json][timeout:15];(node["amenity"="hospital"](around:${radius},${lat},${lon});way["amenity"="hospital"](around:${radius},${lat},${lon}););out center 30;`;
+    let j=null;
+    while(live.length&&!j){
+      const server=live[0];
+      const _t0=Date.now();
+      const _host=server.replace('https://','').split('/')[0];
+      try{
+        const r=await fetchWithTimeout(server+'?data='+encodeURIComponent(query),{},10000);
+        if(!r.ok)throw new Error('status '+r.status);
+        j=await r.json();
+        answered=true;
+        try{const m=`hospital lookup: ${_host} answered in ${Date.now()-_t0} ms (${(j.elements||[]).length} places within ${radius/1000} km)`;log(m);logAuthEvent(m);}catch(_){}
+      }catch(e){
+        try{const m=`hospital lookup: ${_host} did not answer (${(e&&e.message)||'error'}) after ${Date.now()-_t0} ms`;log(m);logAuthEvent(m);}catch(_){}
+        live.shift(); // this server did not answer - move on to the next, and don't use it again this time
+        j=null;
       }
-      if(!results.length)continue;
-      results.sort((a,b)=>a.distanceKm-b.distanceKm);
-      return results.slice(0,12);
-    }catch(e){
-      continue;
     }
+    if(!j){break;} // no server left that answers
+    if(!j.elements||!j.elements.length)continue;
+    const results=[];
+    for(const el of j.elements){
+      const elLat=el.lat||(el.center&&el.center.lat);
+      const elLon=el.lon||(el.center&&el.center.lon);
+      if(elLat==null||elLon==null)continue;
+      const d=haversineKm(lat,lon,elLat,elLon);
+      const tags=el.tags||{};
+      const name=tags.name||'Hospital (name unavailable)';
+      const addrParts=[tags['addr:housenumber'],tags['addr:street'],tags['addr:city']].filter(Boolean);
+      const address=addrParts.length?addrParts.join(' '):(tags['addr:full']||'');
+      const phone=tags.phone||tags['contact:phone']||'';
+      results.push({name,address,phone,lat:elLat,lon:elLon,distanceKm:d});
+    }
+    if(!results.length)continue;
+    results.sort((a,b)=>a.distanceKm-b.distanceKm);
+    return results.slice(0,12);
   }
+  _hospitalLookupFailed=!answered;
+  try{const m=answered?'hospital lookup: servers answered but no hospital found within 200 km':'hospital lookup: no server answered';log(m);logAuthEvent(m);}catch(_){}
   return null;
 }
 
@@ -8898,7 +8926,9 @@ async function refreshLiveEmergency(){
   contentEl.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3);font-size:14px">Looking up nearest hospital…</div>';
   const results=await findNearestHospitals(loc.lat,loc.lon);
   if(!results||!results.length){
-    contentEl.innerHTML='<div style="padding:16px;text-align:center;color:var(--text3);font-size:14px">No hospital found nearby. Try again once you have better signal, or call emergency services directly.</div>';
+    contentEl.innerHTML=_hospitalLookupFailed
+      ?'<div style="padding:16px;text-align:center;color:var(--text3);font-size:14px">Couldn\'t reach the hospital lookup service. Tap Look up again, or call emergency services directly.</div>'
+      :'<div style="padding:16px;text-align:center;color:var(--text3);font-size:14px">No hospital found nearby. Call emergency services directly.</div>';
     return;
   }
   const primary=results[0];
@@ -9044,7 +9074,7 @@ async function lookupEmergencyForSite(site,silent){
   const[lat,lon]=curCoords.split(',').map(parseFloat);
   const results=await findNearestHospitals(lat,lon);
   if(!results||!results.length){
-    if(!silent)await showAlert('No hospital found nearby. You can enter info manually via Edit.');
+    if(!silent)await showAlert(_hospitalLookupFailed?'Couldn\'t reach the hospital lookup service. Try again in a moment, or enter info manually via Edit.':'No hospital found nearby. You can enter info manually via Edit.');
     return;
   }
   const existing=siteEmergencyByUuid[_uuid]||{};
