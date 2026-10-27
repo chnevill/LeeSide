@@ -1140,7 +1140,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v654';
+const APP_VERSION='v655';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -2961,13 +2961,40 @@ function showSync(msg,cls,dur=3000){
 // ═══════════════════════════════════════
 // GOOGLE AUTH & DRIVE
 // ═══════════════════════════════════════
+// v655: Google's sign-in script is requested once, when the page opens. If the phone had no
+// connection at that moment (airplane mode, a weak signal, waking up) the request fails and
+// nothing ever asked again, so signing in waited for a script that was never coming until the
+// app was closed and reopened. This asks again, only while the script is missing AND the phone
+// says it is online: at most 3 tries, at least 8 seconds apart, and never once it has loaded.
+// It runs only when the script is absent, so a normal start-up is unchanged.
+let _gisRetryCount=0,_gisRetryAt=0;
+function _gisReady(){return !!(window.google&&window.google.accounts&&window.google.accounts.oauth2);}
+function _retryGisScript(why){
+  try{
+    if(_gisReady()||!navigator.onLine)return false;
+    if(_gisRetryCount>=3||Date.now()-_gisRetryAt<8000)return false;
+    _gisRetryCount++;_gisRetryAt=Date.now();
+    document.querySelectorAll('script[data-gis-retry]').forEach(el=>el.remove());
+    const sc=document.createElement('script');
+    sc.src='https://accounts.google.com/gsi/client';sc.async=true;sc.setAttribute('data-gis-retry','1');
+    const n=_gisRetryCount;
+    sc.onload=()=>{try{logAuthEvent('sign-in script: loaded on retry '+n);}catch(_){}};
+    sc.onerror=()=>{try{logAuthEvent('sign-in script: retry '+n+' did not load');}catch(_){}};
+    document.head.appendChild(sc);
+    try{logAuthEvent('sign-in script: not loaded yet, trying again ('+why+', try '+n+' of 3)');}catch(_){}
+    return true;
+  }catch(e){return false;}
+}
+// Coming back online starts the tries fresh: failures while offline shouldn't use them up.
+window.addEventListener('online',()=>{try{if(!_gisReady()){_gisRetryCount=0;_gisRetryAt=0;_retryGisScript('phone came back online');}}catch(_){}});
 function waitForGis(timeoutMs){
   return new Promise(resolve=>{
-    if(window.google&&window.google.accounts&&window.google.accounts.oauth2){resolve(true);return;}
+    if(_gisReady()){resolve(true);return;}
     const start=Date.now();
     const iv=setInterval(()=>{
-      if(window.google&&window.google.accounts&&window.google.accounts.oauth2){clearInterval(iv);resolve(true);}
+      if(_gisReady()){clearInterval(iv);resolve(true);}
       else if(Date.now()-start>timeoutMs){clearInterval(iv);resolve(false);}
+      else if(Date.now()-start>=5000)_retryGisScript('still waiting');
     },200);
   });
 }
