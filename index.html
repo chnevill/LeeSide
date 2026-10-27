@@ -1140,7 +1140,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v659';
+const APP_VERSION='v662';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -8847,13 +8847,90 @@ const OVERPASS_SERVERS=[
   'https://overpass.private.coffee/api/interpreter'
 ];
 let _hospitalLookupFailed=false;
+function _tagPhone(t){t=t||{};return String(t.phone||t['contact:phone']||t['contact:mobile']||t.mobile||'').split(';')[0].trim();}
+// Background phone search: the hospital and location are shown first; if the hospital has no phone number
+// we keep looking for one in the other sources and add it to the screen if one turns up.
+let _phoneSearchKey=null;const _phoneTried={};
+async function _findPhoneFor(osmType,osmId){
+  const t=osmType==='node'?'node':osmType==='relation'?'relation':'way';
+  const L=t==='node'?'N':t==='relation'?'R':'W';
+  return await new Promise(resolve=>{
+    let pending=0,done=false;
+    const fin=v=>{if(!done){done=true;resolve(v);}};
+    const attempt=fn=>{pending++;(async()=>{let v='';try{v=await fn();}catch(_){v='';}pending--;if(v)fin(v);else if(pending===0)fin('');})();};
+    attempt(async()=>{
+      const r=await fetchWithTimeout('https://nominatim.openstreetmap.org/lookup?osm_ids='+L+osmId+'&format=json&extratags=1',{},12000);
+      if(!r.ok)return '';const a=await r.json();return _tagPhone(a&&a[0]&&a[0].extratags);
+    });
+    for(const server of OVERPASS_SERVERS){
+      attempt(async()=>{
+        const q='[out:json][timeout:10];'+t+'('+osmId+');out tags;';
+        const r=await fetchWithTimeout(server+'?data='+encodeURIComponent(q),{},12000);
+        if(!r.ok)return '';const j=await r.json();return _tagPhone(j&&j.elements&&j.elements[0]&&j.elements[0].tags);
+      });
+    }
+    setTimeout(()=>fin(''),14000);
+  });
+}
+async function fillMissingPhone(){
+  const em=_liveEmergencyData;
+  if(!em||em.phone||!em.osmId)return;
+  const key=em.osmType+':'+em.osmId;
+  if(_phoneTried[key]!==undefined){if(_phoneTried[key]){em.phone=_phoneTried[key];renderLiveEmergencyView();}return;}
+  _phoneSearchKey=key;renderLiveEmergencyView();
+  let ph='';
+  try{ph=await _findPhoneFor(em.osmType,em.osmId);}catch(_){ph='';}
+  _phoneTried[key]=ph;
+  try{const m='hospital lookup: phone search '+(ph?'found a number':'found no number');log(m);logAuthEvent(m);}catch(_){}
+  if(_phoneSearchKey===key)_phoneSearchKey=null;
+  const cur=_liveEmergencyData;
+  if(cur&&cur.osmType+':'+cur.osmId===key){if(ph)cur.phone=ph;renderLiveEmergencyView();}
+}
+let _nominatimBad=false; // set when Nominatim fails once during a lookup, so it is not asked again for the rest of it
+async function nominatimHospitals(lat,lon,radius){
+  // Second hospital source (OpenStreetMap's Nominatim search). Returns a list (maybe empty) if it answered, or null if it did not.
+  const _t0=Date.now();
+  try{
+    const dLat=radius/111000, dLon=dLat/Math.max(0.2,Math.cos(lat*Math.PI/180));
+    const vb=[lon-dLon,lat+dLat,lon+dLon,lat-dLat].map(x=>x.toFixed(5)).join(',');
+    const url='https://nominatim.openstreetmap.org/search?q=hospital&viewbox='+vb+'&bounded=1&format=json&limit=40&addressdetails=1&extratags=1';
+    const r=await fetchWithTimeout(url,{},10000);
+    if(!r.ok)throw new Error('status '+r.status);
+    const arr=await Promise.race([r.json(),new Promise((_,rej)=>setTimeout(()=>rej(new Error('Request timed out')),10000))]);
+    const out=[];
+    for(const el of (Array.isArray(arr)?arr:[])){
+      if(el.class!=='amenity'||el.type!=='hospital')continue;
+      const elLat=parseFloat(el.lat),elLon=parseFloat(el.lon);
+      if(isNaN(elLat)||isNaN(elLon))continue;
+      const a=el.address||{},x=el.extratags||{};
+      const city=a.city||a.town||a.village||a.suburb||'';
+      const addrParts=[a.house_number,a.road,city].filter(Boolean);
+      out.push({name:el.name||(el.display_name||'').split(',')[0]||'Hospital (name unavailable)',address:addrParts.join(' '),phone:_tagPhone(x),lat:elLat,lon:elLon,distanceKm:haversineKm(lat,lon,elLat,elLon),osmType:el.osm_type,osmId:el.osm_id});
+    }
+    try{const m=`hospital lookup: nominatim answered in ${Date.now()-_t0} ms (${out.length} places within ${radius/1000} km)`;log(m);logAuthEvent(m);}catch(_){}
+    return out;
+  }catch(e){
+    _nominatimBad=true;
+    try{const m=`hospital lookup: nominatim did not answer (${(e&&e.message)||'error'}) after ${Date.now()-_t0} ms`;log(m);logAuthEvent(m);}catch(_){}
+    return null;
+  }
+}
 async function findNearestHospitals(lat,lon){
   _hospitalLookupFailed=false;
+  _nominatimBad=false;
   const radii=[25000,75000,200000]; // meters: 25km, then 75km, then 200km if nothing found
   const live=OVERPASS_SERVERS.slice(); // servers that have not failed during this lookup
   let answered=false;
   for(const radius of radii){
     const query=`[out:json][timeout:15];(node["amenity"="hospital"](around:${radius},${lat},${lon});way["amenity"="hospital"](around:${radius},${lat},${lon}););out center 30;`;
+    if(!_nominatimBad){
+      const nm=await nominatimHospitals(lat,lon,radius);
+      if(nm){
+        answered=true;
+        if(nm.length){nm.sort((x,y)=>x.distanceKm-y.distanceKm);return nm.slice(0,12);}
+        continue; // answered, nothing in this range - widen
+      }
+    }
     let j=null;
     if(live.length){
       // Ask the servers one after another, but don't wait for a slow one to give up before
@@ -8900,8 +8977,8 @@ async function findNearestHospitals(lat,lon){
       const name=tags.name||'Hospital (name unavailable)';
       const addrParts=[tags['addr:housenumber'],tags['addr:street'],tags['addr:city']].filter(Boolean);
       const address=addrParts.length?addrParts.join(' '):(tags['addr:full']||'');
-      const phone=tags.phone||tags['contact:phone']||'';
-      results.push({name,address,phone,lat:elLat,lon:elLon,distanceKm:d});
+      const phone=_tagPhone(tags);
+      results.push({name,address,phone,lat:elLat,lon:elLon,distanceKm:d,osmType:el.type,osmId:el.id});
     }
     if(!results.length)continue;
     results.sort((a,b)=>a.distanceKm-b.distanceKm);
@@ -8952,6 +9029,7 @@ async function refreshLiveEmergency(){
   const primary=results[0];
   _liveEmergencyData={...primary,autoFound:true,alternates:results.slice(1),liveLat:loc.lat,liveLon:loc.lon};
   renderLiveEmergencyView();
+  fillMissingPhone();
 }
 
 function renderLiveEmergencyView(){
@@ -8971,6 +9049,7 @@ function renderLiveEmergencyView(){
       ${em.distanceKm!=null?`<div style="color:var(--text3);font-size:15px;margin-bottom:12px">${fmtDistance(em.distanceKm)} away</div>`:''}
       <div style="color:var(--text3);font-size:13px;margin-bottom:12px">📍 Auto-found — unverified</div>
       ${mapsUrl?`<a href="${mapsUrl}" target="_blank" class="btn btn-gold" style="display:block;text-align:center;text-decoration:none;margin-top:6px;font-size:18px;padding:16px">Open in Maps</a>`:''}
+      ${!em.phone&&em.osmId?(_phoneSearchKey===em.osmType+':'+em.osmId?'<div style="color:var(--text3);font-size:14px;margin-top:10px">Looking for a phone number…</div>':(_phoneTried[em.osmType+':'+em.osmId]===''?'<div style="color:var(--text3);font-size:14px;margin-top:10px">No phone number found for this hospital</div>':'')):''}
       ${em.phone?`<a href="tel:${em.phone.replace(/[^0-9+]/g,'')}" class="btn btn-ghost" style="display:block;text-align:center;text-decoration:none;margin-top:10px;font-size:18px;padding:16px">📞 Call ${em.phone}</a>`:''}
     </div>
     ${settings.emContactName&&settings.emContactPhone?`
@@ -8996,12 +9075,13 @@ function promoteLiveAlternate(idx){
   const em=_liveEmergencyData;
   if(!em||!em.alternates||!em.alternates[idx])return;
   const promoted=em.alternates[idx];
-  const oldPrimary={name:em.name,address:em.address,phone:em.phone,lat:em.lat,lon:em.lon,distanceKm:em.distanceKm};
+  const oldPrimary={name:em.name,address:em.address,phone:em.phone,lat:em.lat,lon:em.lon,distanceKm:em.distanceKm,osmType:em.osmType,osmId:em.osmId};
   const newAlternates=em.alternates.filter((_,i)=>i!==idx);
   newAlternates.push(oldPrimary);
   newAlternates.sort((a,b)=>(a.distanceKm||0)-(b.distanceKm||0));
   _liveEmergencyData={...em,...promoted,autoFound:true,alternates:newAlternates};
   renderLiveEmergencyView();
+  fillMissingPhone();
 }
 
 let _currentLiveLoc=null;
