@@ -1140,7 +1140,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v662';
+const APP_VERSION='v663';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -2160,7 +2160,7 @@ async function _peekDriveFile(){
 function _skipWatchBegin(trigger){
   try{
     const w={trigger:trigger||'',fp:_syncFingerprint(),peek:null,settled:false};
-    _peekDriveFile().then(x=>{w.peek=x;w.settled=true;}).catch(e=>{w.peek={err:String((e&&e.message)||e)};w.settled=true;});
+    w.peekP=_peekDriveFile().then(x=>{w.peek=x;w.settled=true;}).catch(e=>{w.peek={err:String((e&&e.message)||e)};w.settled=true;});
     return w;
   }catch(e){try{log('skip-watch: could not start ('+((e&&e.message)||e)+')');}catch(_){}return null;}
 }
@@ -2198,6 +2198,38 @@ function _skipWatchVerdict(w){
       log(changed.length?`skip-watch: this full sync changed ${changed.join(', ')} on this device`:'skip-watch: this full sync changed nothing on this device');
     }
   }catch(e){try{log('skip-watch: check failed ('+((e&&e.message)||e)+')');}catch(_){}}
+}
+// v663 — SKIP A SYNC THAT CAN'T CHANGE ANYTHING. Decided BEFORE anything is downloaded, and only when ALL of these hold:
+//  - the sync is an automatic background one (opening the app, coming back to it, regaining signal) - never one you
+//    asked for, never one started by an edit, never a retry
+//  - this device has changed nothing since its last completed sync (same fingerprint the watch has been logging)
+//  - no photos are waiting to upload or to download
+//  - Drive's file has exactly the checksum this device left there (another device or the PC writing anything changes it)
+//  - that last full sync was no more than 30 minutes ago (the time is NOT renewed by a skip, so a full sync happens
+//    at least every 30 minutes of use)
+// Anything unclear, slow or failed (no answer from Drive within 4 s, no checksum, an error) means NOT skipped: the
+// normal full sync runs exactly as before. To switch skipping off, set SKIP_UNCHANGED_SYNC to false.
+const SKIP_UNCHANGED_SYNC=true;
+async function _skipDecide(w,retryCount,force,allowReauth){
+  try{
+    if(!SKIP_UNCHANGED_SYNC||!w)return false;
+    if(retryCount||force||allowReauth)return false;
+    if(!SKIPWATCH_PASSIVE.test(w.trigger||''))return false;
+    if(_formatLocked)return false;
+    const m=syncMark;
+    if(!m||!m.fp||!m.md5||!m.at||!w.fp)return false;
+    if(m.fileId!==driveFileId)return false;
+    if((m.email||null)!==((userInfo&&userInfo.email)||null))return false;
+    const age=Date.now()-m.at;
+    if(age<0||age>SKIPWATCH_MAX_AGE_MS)return false;
+    if(m.fp.all!==w.fp.all)return false;
+    if(Object.keys(collectLocalPhotos()).some(h=>!uploadedPhotoHashes.includes(h)))return false;
+    if(_collectUnresolvedPhotos().length)return false;
+    await Promise.race([w.peekP,new Promise(r=>setTimeout(r,4000))]);
+    if(!w.settled||!w.peek||w.peek.err||!w.peek.md5)return false;
+    if(w.peek.md5!==m.md5)return false;
+    return true;
+  }catch(e){try{log('skip check failed, running the full sync ('+((e&&e.message)||e)+')');}catch(_){}return false;}
 }
 // Log-only: how much space deleted records take. Reads only.
 function deletedRecordStats(){
@@ -3721,6 +3753,13 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
     try{const ps=photoStampStats();log(`photo timestamps: ${ps.total} photos (${ps.live} live, ${ps.tomb} deleted) - ${ps.stamped} have their own timestamp, ${ps.unstamped} don't, ${ps.legacyStrings} are in the old plain-text format`);}catch(e){}
     try{const ds=deletedRecordStats();log(`deleted records kept: ${ds.total} (flights ${ds.flights}, notes ${ds.notes}, gear ${ds.gear}, sites ${ds.sites}) taking about ${(ds.bytes/1024).toFixed(1)} KB of the synced file`);}catch(e){}
     const _skipW=_skipWatchBegin(trigger);
+    if(await _skipDecide(_skipW,retryCount,force,allowReauth)){
+      const _m=syncMark;
+      log(`sync SKIPPED: nothing changed on this device, the file on Drive is identical to what this device left ${Math.round((Date.now()-_m.at)/60000)} min ago, no photos waiting. Saved about ${_m.size?Math.round(_m.size/1024):'?'} KB of download (and the same again if it would have uploaded). Last full sync stays at ${Math.round((Date.now()-_m.at)/60000)} min ago.`);
+      showSync('✓ Synced','synced');
+      renderDebugPanel();
+      return;
+    }
     if(driveFileId){
       const _tFetch=performance.now();
       const r=await driveReq(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`,{},allowReauth);
