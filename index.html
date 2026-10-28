@@ -1140,7 +1140,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v663';
+const APP_VERSION='v664';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -1229,8 +1229,12 @@ let _authPopupInFlight=false; // true only during the exact window between calli
                                 // requestAccessToken() and getting a response — used
                                 // to catch, directly, whether the page ever actually
                                 // starts navigating away during that specific window
+let _bgRefreshCancel=null; // set while a background (non-tap) renewal is in flight: lets a real tap set it aside
+let _tokenRefreshInteractive=false;
 function _doTokenRefresh(showFailureScreen=true,interactive=false){
   return new Promise(async resolve=>{
+    let _cancelled=false,_giveUpQuiet=null;
+    if(!interactive)_bgRefreshCancel=()=>{_cancelled=true;if(_giveUpQuiet)_giveUpQuiet();};
     const _gisAlreadyReady=!!(window.google&&window.google.accounts&&window.google.accounts.oauth2);
     const _waitStart=performance.now();
     logAuthEvent('token refresh requested (hint: '+(userInfo?.email||'none')+') — GIS '+(_gisAlreadyReady?'already ready':'not yet ready, waiting')+'');
@@ -1244,6 +1248,7 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
     },8000):null;
     const ready=await waitForGis(25000);
     if(progressTimer)clearTimeout(progressTimer);
+    if(_cancelled){resolve(false);return;}
     const _waitedMs=Math.round(performance.now()-_waitStart);
     if(!_gisAlreadyReady)logAuthEvent('GIS wait took '+_waitedMs+'ms before requesting the popup');
     if(!ready){
@@ -1269,7 +1274,9 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
         if(showFailureScreen)accessToken=null;
         localSave();if(showFailureScreen)showSignInScreen();resolve(false);
       };
-      const timeoutId=setTimeout(giveUp,interactive?90000:9000); // an interactive flow means a real person reading and tapping through Google's own screens (the unverified-app warning, then consent) — 9s was only ever enough for a fast, silent attempt with no human in the loop
+      const timeoutId=setTimeout(giveUp,interactive?90000:9000);
+      _giveUpQuiet=()=>{if(settled)return;settled=true;_authPopupInFlight=false;clearTimeout(timeoutId);logAuthEvent('background sign-in attempt set aside - a real tap needs its own request');resolve(false);};
+      // // an interactive flow means a real person reading and tapping through Google's own screens (the unverified-app warning, then consent) — 9s was only ever enough for a fast, silent attempt with no human in the loop
       const client=google.accounts.oauth2.initTokenClient({
         client_id:CLIENT_ID,scope:SCOPES,
         callback:async resp=>{
@@ -1357,9 +1364,20 @@ function refreshToken(showFailureScreen=true,interactive=false){
   // Sharing the in-flight promise across every caller, interactive or not,
   // is what the original _tokenRefreshPromise comment already describes as
   // the fix for "repeated pile-ups" - it just wasn't applied to this path.
-  if(_tokenRefreshPromise)return _tokenRefreshPromise;
-  _tokenRefreshPromise=_doTokenRefresh(showFailureScreen,interactive).finally(()=>{_tokenRefreshPromise=null;});
-  return _tokenRefreshPromise;
+  // v664: ONE exception. A real tap used to join a quiet background renewal that was already waiting, and
+  // then failed when that one gave up after 9 s ("Sign-in unavailable") - the tap never got its own request
+  // at all. Seen on iPhone 10/27. A tap now sets a background attempt aside and makes its own request,
+  // straight away (so it still counts as a tap). Taps still share with other taps, and everything else still shares.
+  if(_tokenRefreshPromise){
+    if(interactive&&!_tokenRefreshInteractive&&_bgRefreshCancel){
+      try{_bgRefreshCancel();}catch(e){}
+      _tokenRefreshPromise=null;_bgRefreshCancel=null;
+    }else return _tokenRefreshPromise;
+  }
+  _tokenRefreshInteractive=!!interactive;
+  const p=_doTokenRefresh(showFailureScreen,interactive).finally(()=>{if(_tokenRefreshPromise===p){_tokenRefreshPromise=null;_bgRefreshCancel=null;}});
+  _tokenRefreshPromise=p;
+  return p;
 }
 async function silentReauth(){
   // Only ever called from boot, after the app (with local, offline-available
