@@ -1140,7 +1140,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v664';
+const APP_VERSION='v665';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -1229,11 +1229,13 @@ let _authPopupInFlight=false; // true only during the exact window between calli
                                 // requestAccessToken() and getting a response — used
                                 // to catch, directly, whether the page ever actually
                                 // starts navigating away during that specific window
+let _needDriveConsent=false; // v665: Google signed us in but did not grant Drive access (the Drive box was not ticked) - only a real tap that asks again can fix it
 let _bgRefreshCancel=null; // set while a background (non-tap) renewal is in flight: lets a real tap set it aside
 let _tokenRefreshInteractive=false;
 function _doTokenRefresh(showFailureScreen=true,interactive=false){
   return new Promise(async resolve=>{
     let _cancelled=false,_giveUpQuiet=null;
+    if(_needDriveConsent&&!interactive){logAuthEvent('quiet sign-in renewal skipped: Drive permission is still missing, a tap is needed');resolve(false);return;}
     if(!interactive)_bgRefreshCancel=()=>{_cancelled=true;if(_giveUpQuiet)_giveUpQuiet();};
     const _gisAlreadyReady=!!(window.google&&window.google.accounts&&window.google.accounts.oauth2);
     const _waitStart=performance.now();
@@ -1296,6 +1298,17 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
             // committing once confirmed safe closes that window entirely rather than
             // trying to clean up after it.
             const newToken=resp.access_token;
+            // v665: Google lets people untick individual permissions on its consent screen. A token without the Drive
+            // permission signs in fine but every Drive request then fails with 403 "insufficient authentication scopes"
+            // (seen on iPhone 10/28). Never accept such a token; ask again next time, with the consent screen forced.
+            if(typeof resp.scope==='string'&&resp.scope.indexOf('auth/drive.file')<0){
+              _needDriveConsent=true;
+              logAuthEvent('sign-in finished but Google Drive access was NOT allowed (permissions given: '+resp.scope.replace(/https:\/\/www\.googleapis\.com\/auth\//g,'')+')');
+              localSave();
+              if(interactive)await showAlert('Google signed you in but did not give LeeSide permission to use your Google Drive, so nothing can sync. Tap the reconnect banner again and, on Google\'s screen, tick the box for Google Drive.');
+              resolve(false);
+              return;
+            }
             let identityResult=null;
             if(interactive||!userInfo?.email)identityResult=await fetchUserInfo(newToken); // interactive attempts always verify, since Google's account picker is the only realistic way this device ends up authenticated as someone different. Silent background refreshes skip this extra check (only when nothing's cached yet) since they're hinted to the same account and can't switch on their own
             if(identityResult&&identityResult.blocked){
@@ -1316,6 +1329,7 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
             // Only committed to the shared global now that it's confirmed safe - the
             // one and only point in this whole flow where accessToken is assigned.
             accessToken=newToken;
+            _needDriveConsent=false;
             _tokenExpiry=Date.now()+3600*1000;
             logAuthEvent('token refresh succeeded');
             scheduleTokenRefresh();
@@ -1341,7 +1355,7 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
       // sign-in, or right after a real sign-out) - reconnecting as an already-known
       // user gets the lightest-weight prompt Google will allow instead, the same way
       // the reliably-working silent/background path already does.
-      client.requestAccessToken({prompt:(interactive&&!userInfo?.email)?'select_account':'',hint:userInfo?.email});
+      client.requestAccessToken({prompt:(interactive&&!userInfo?.email)?'select_account':((interactive&&_needDriveConsent)?'consent':''),hint:userInfo?.email});
     }catch(e){
       _authPopupInFlight=false;
       logAuthEvent('token refresh threw: '+(e.message||e));
@@ -2994,6 +3008,7 @@ function applyFontScale(scale){
 // ═══════════════════════════════════════
 let _syncBarTimer=null;
 function showSync(msg,cls,dur=3000){
+  if(_needDriveConsent&&msg==='Sign-in needed — tap to reconnect')msg='Tick the Google Drive box when signing in — tap to reconnect';
   const b=document.getElementById('syncBar');
   if(msg!=='Syncing…')log('banner ['+cls+(dur>0?', '+dur+'ms':', stays')+']: '+msg);
   if((cls==='syncing'||cls==='synced')&&!debugMode){
@@ -3080,7 +3095,7 @@ async function signInWithGoogle(){
     localSave();
     syncFromDrive(0,false,true,'interactive sign-in just completed');
   }else{
-    showSync('Sign-in unavailable — check your connection and try again','error');
+    showSync(_needDriveConsent?'Google Drive access was not allowed — tap again and tick the Drive box':'Sign-in unavailable — check your connection and try again','error');
     // Found 9/30: without this, a known device (userInfo already present,
     // local data already there) stayed stuck on this screen indefinitely if
     // the attempt failed - identical to the "online per navigator.onLine,
@@ -3190,6 +3205,11 @@ async function driveReq(url,opts={},allowReauth=false){
         const reason=body?.error?.errors?.[0]?.reason||'';
         isRateLimit=reason==='rateLimitExceeded'||reason==='userRateLimitExceeded';
         log(`Drive 403 detail: reason=${reason||'(none)'} message=${String(body?.error?.message||'').slice(0,160)}`);
+        if(reason==='insufficientPermissions'&&/authentication scopes/i.test(String(body?.error?.message||''))){
+          // v665: the token we hold has no Drive permission - useless. Drop it and remember why, so the next tap asks properly.
+          _needDriveConsent=true;accessToken=null;_tokenExpiry=0;localSave();
+          logAuthEvent('driveReq got 403: this sign-in has no Google Drive permission - token dropped, a tap is needed to ask again');
+        }
       }catch(e){/* not JSON, or already consumed - fine, treat as a plain 403 */}
     }
     resp._isRateLimit=isRateLimit; // flag for the caller's retry logic to use a longer backoff and a clearer message
