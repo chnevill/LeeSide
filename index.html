@@ -1140,7 +1140,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v666';
+const APP_VERSION='v667';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7554,11 +7554,39 @@ function windFilterMatches(w,clauses){
   if(!w)return false;
   return Object.keys(clauses).every(metric=>windValueMatches(metric==='gust'?w.gust:w.speed,clauses[metric]));
 }
+let _siteLocRetryN=0, _siteLocRetryTimer=null, _siteLocRetryAt=0;
+const SITE_LOC_RETRY_MS=[2500,8000,20000];
+function _scheduleSiteLocRetry(){
+  if(_siteLocRetryTimer)return;
+  if(Date.now()-_siteLocRetryAt>60000)_siteLocRetryN=0; // a fresh visit after a quiet minute gets a fresh set of tries
+  if(_siteLocRetryN>=SITE_LOC_RETRY_MS.length)return;
+  _siteLocRetryAt=Date.now();
+  const delay=SITE_LOC_RETRY_MS[_siteLocRetryN++];
+  _siteLocRetryTimer=setTimeout(async()=>{
+    _siteLocRetryTimer=null;
+    try{
+      const tabEl=document.getElementById('tab-sites');
+      const inp=document.getElementById('searchInput');
+      if(!tabEl||!tabEl.classList.contains('active')||document.hidden)return; // not looking at Sites - the next visit starts fresh
+      if(inp&&inp.value.trim())return; // a search is in progress - leave it alone
+      const l=await getCurrentLocation(true);
+      if(!l){_scheduleSiteLocRetry();return;}
+      const contentEl=document.getElementById('content');
+      const top=contentEl?contentEl.scrollTop:0;
+      await renderSiteNotesCardList(false,'');
+      if(contentEl)contentEl.scrollTop=top;
+    }catch(e){}
+  },delay);
+}
 async function renderSiteNotesCardList(force,q=''){
   q=q.trim();
   const listEl=document.getElementById('siteNotesCardList');
   if(!listEl)return;
   const loc=await getCurrentLocation(force);
+  // v667: no location this time (slow GPS fix, timeout) - quietly try again a couple of times, the same
+  // fresh lookup a pull-down does, instead of leaving "Location unavailable" until the user pulls.
+  if(loc)_siteLocRetryN=0;
+  else if(!force&&!q)_scheduleSiteLocRetry();
   const windFilter=parseWindFilter(q);
   if(windFilter){
     // Wind loads asynchronously per-card after the list first renders, so if a
