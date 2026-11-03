@@ -1064,6 +1064,14 @@ body.theme-light .star-input button,body.theme-terra .star-input button{color:rg
     <div class="set-row"><span class="set-lbl" style="flex-shrink:0;width:60px">Name</span><input id="setEmContactName" type="text" style="flex:1;background:none;border:none;color:var(--gold);font-family:'Syne',sans-serif;font-weight:700;font-size:17px;text-align:right;outline:none"></div>
     <div class="set-row"><span class="set-lbl" style="flex-shrink:0;width:60px">Phone</span><input id="setEmContactPhone" type="tel" style="flex:1;background:none;border:none;color:var(--gold);font-family:'Syne',sans-serif;font-weight:700;font-size:17px;text-align:right;outline:none"></div>
   </div>
+  <div class="sec-label">Google account</div>
+  <div class="set-group" style="margin-bottom:16px">
+    <div class="set-row" id="gsiKeepRow" style="cursor:pointer;flex-wrap:wrap">
+      <span class="set-lbl">Confirm Google sign-in</span><span style="color:var(--text2)" id="gsiKeepArrow">→</span>
+      <div id="gsiKeepNote" style="flex-basis:100%;font-size:12px;color:var(--text2);margin-top:4px">Google retires sign-in setups it thinks are unused. Tapping this once in a while tells it LeeSide is in use. It does not change your data or sync.</div>
+      <div id="gsiKeepBtnHost" style="flex-basis:100%;display:none;margin-top:10px" onclick="event.stopPropagation()"></div>
+    </div>
+  </div>
   <div class="sec-label">Data</div>
   <div class="set-group">
     <div class="set-row" id="exportPdfBtn" style="cursor:pointer"><span class="set-lbl">Export Flight Log (PDF)</span><span style="color:var(--text2)">📄</span></div>
@@ -1140,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v667';
+const APP_VERSION='v668';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -3052,6 +3060,42 @@ function _retryGisScript(why){
 }
 // Coming back online starts the tries fresh: failures while offline shouldn't use them up.
 window.addEventListener('online',()=>{try{if(!_gisReady()){_gisRetryCount=0;_gisRetryAt=0;_retryGisScript('phone came back online');}}catch(_){}});
+// v668: Google emailed that LeeSide's sign-in client looked inactive for 5 months and would be deleted. Our normal
+// Drive sign-in is an access-token request, which Google does not seem to count as use. This adds an optional,
+// separate "Sign in with Google" (ID token) step the user can tap. It never touches the Drive token, sync or data.
+const GSI_CONFIRM_KEY='leeside_gsi_confirmed_at';
+function _gsiRefreshLabel(){
+  const note=document.getElementById('gsiKeepNote');if(!note)return;
+  let at=0;try{at=parseInt(localStorage.getItem(GSI_CONFIRM_KEY)||'0',10)||0;}catch(e){}
+  note.textContent=(at?'Last confirmed on this device: '+new Date(at).toLocaleDateString()+'. ':'')+'Google retires sign-in setups it thinks are unused. Tapping this once in a while tells it LeeSide is in use. It does not change your data or sync.';
+}
+let _gsiInitDone=false;
+async function openGsiConfirm(){
+  const host=document.getElementById('gsiKeepBtnHost');if(!host)return;
+  if(host.style.display!=='none'){host.style.display='none';return;}
+  host.style.display='block';
+  if(host.dataset.ready==='1')return;
+  host.textContent='Loading Google…';
+  const ok=await waitForGis(8000);
+  if(!ok||!window.google||!google.accounts||!google.accounts.id){host.textContent='Google sign-in could not load. Check your connection and try again.';logAuthEvent('confirm sign-in: Google script not available');return;}
+  try{
+    if(!_gsiInitDone){
+      google.accounts.id.initialize({client_id:CLIENT_ID,auto_select:false,cancel_on_tap_outside:true,callback:resp=>{
+        let em='';
+        try{const part=resp.credential.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');em=JSON.parse(decodeURIComponent(escape(atob(part)))).email||'';}catch(e){}
+        try{localStorage.setItem(GSI_CONFIRM_KEY,String(Date.now()));}catch(e){}
+        logAuthEvent('confirm sign-in done'+(em?' ('+em+')':''));
+        _gsiRefreshLabel();
+        const h=document.getElementById('gsiKeepBtnHost');if(h)h.style.display='none';
+        showAlert('Done. Google now sees LeeSide in use. Your data and sync were not touched.');
+      }});
+      _gsiInitDone=true;
+    }
+    host.textContent='';
+    google.accounts.id.renderButton(host,{type:'standard',theme:'outline',size:'large',text:'signin_with',shape:'pill',width:Math.min(300,Math.max(200,host.clientWidth||260))});
+    host.dataset.ready='1';
+  }catch(e){host.textContent='Google sign-in could not start.';logAuthEvent('confirm sign-in failed to start: '+(e&&e.message||e));}
+}
 function waitForGis(timeoutMs){
   return new Promise(resolve=>{
     if(_gisReady()){resolve(true);return;}
@@ -10720,6 +10764,8 @@ function _watchNavGradientLayout(){
 // ═══════════════════════════════════════
 function wire(){
   document.getElementById('googleSignInBtn').addEventListener('click',()=>signInWithGoogle());
+  document.getElementById('gsiKeepRow').addEventListener('click',()=>openGsiConfirm());
+  _gsiRefreshLabel();
   document.getElementById('syncBar').addEventListener('click',()=>{
     const b=document.getElementById('syncBar');
     if(b.classList.contains('error')||b.classList.contains('offline')){
