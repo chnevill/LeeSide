@@ -1064,20 +1064,17 @@ body.theme-light .star-input button,body.theme-terra .star-input button{color:rg
     <div class="set-row"><span class="set-lbl" style="flex-shrink:0;width:60px">Name</span><input id="setEmContactName" type="text" style="flex:1;background:none;border:none;color:var(--gold);font-family:'Syne',sans-serif;font-weight:700;font-size:17px;text-align:right;outline:none"></div>
     <div class="set-row"><span class="set-lbl" style="flex-shrink:0;width:60px">Phone</span><input id="setEmContactPhone" type="tel" style="flex:1;background:none;border:none;color:var(--gold);font-family:'Syne',sans-serif;font-weight:700;font-size:17px;text-align:right;outline:none"></div>
   </div>
-  <div class="sec-label">Google account</div>
-  <div class="set-group" style="margin-bottom:16px">
-    <div class="set-row" id="gsiKeepRow" style="cursor:pointer;flex-wrap:wrap">
-      <span class="set-lbl">Confirm Google sign-in</span><span style="color:var(--text2)" id="gsiKeepArrow">→</span>
-      <div id="gsiKeepNote" style="flex-basis:100%;font-size:12px;color:var(--text2);margin-top:4px">Google retires sign-in setups it thinks are unused. Tapping this once in a while tells it LeeSide is in use. It does not change your data or sync.</div>
-      <div id="gsiKeepBtnHost" style="flex-basis:100%;display:none;margin-top:10px" onclick="event.stopPropagation()"></div>
-    </div>
-  </div>
   <div class="sec-label">Data</div>
   <div class="set-group">
     <div class="set-row" id="exportPdfBtn" style="cursor:pointer"><span class="set-lbl">Export Flight Log (PDF)</span><span style="color:var(--text2)">📄</span></div>
     <div class="set-row" id="exportExcelBtn" style="cursor:pointer"><span class="set-lbl">Export to Excel</span><span style="color:var(--text2)">📊</span></div>
     <div class="set-row" id="exportJsonBtn" style="cursor:pointer"><span class="set-lbl">Export backup (JSON)</span><span style="color:var(--text2)">↓</span></div>
     <div class="set-row" id="importJsonRow" style="cursor:pointer"><span class="set-lbl">Import backup (JSON)</span><span style="color:var(--text2)">↑</span><input type="file" id="importFile" accept=".json" style="display:none"></div>
+    <div class="set-row" id="gsiKeepRow" style="cursor:pointer;flex-wrap:wrap" data-debugonly>
+      <span class="set-lbl">Confirm Google sign-in</span><span style="color:var(--text2)" id="gsiKeepArrow">→</span>
+      <div id="gsiKeepNote" style="flex-basis:100%;font-size:12px;color:var(--text2);margin-top:4px">Google retires sign-in setups it thinks are unused. Tapping this once in a while tells it LeeSide is in use. It does not change your data or sync.</div>
+      <div id="gsiKeepBtnHost" style="flex-basis:100%;display:none;margin-top:10px" onclick="event.stopPropagation()"></div>
+    </div>
     <div class="set-row" id="authLogBtn" style="cursor:pointer" data-debugonly><span class="set-lbl">Sign-in log</span><span style="color:var(--text2)">🔑</span></div>
     <div class="set-row" id="brokenPhotosBtn" style="cursor:pointer" data-debugonly><span class="set-lbl">Photos that won't load</span><span style="color:var(--text2)">🖼️</span></div>
     <div class="set-row" id="syncDataUsageBtn" style="cursor:pointer" data-debugonly><span class="set-lbl">Sync data usage</span><span style="color:var(--text2)">📶</span></div>
@@ -1148,7 +1145,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v668';
+const APP_VERSION='v669';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
