@@ -1145,7 +1145,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v669';
+const APP_VERSION='v670';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6488,6 +6488,23 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
 }
 let _windCache={}; // site -> {data, fetchedAt}
 const WIND_CACHE_MS=15*60*1000;
+// v670: why the last wind fetch failed, and a retrying wrapper for the Sites list. A card used to show "No data" after one
+// failed request and only a pull-down tried again. Now a failed site is retried quietly up to three times, a few seconds apart.
+let _windLastFail='';
+const WIND_RETRY_MS=[2500,6000,12000]; // a cold start can take a while to get its network going
+async function fetchSiteWindRetry(coords,force,onRetry){
+  let w=await fetchSiteWind(coords,force);
+  for(let i=0;!w&&i<WIND_RETRY_MS.length;i++){
+    log('wind fetch failed for '+coords+': '+_windLastFail+' (try '+(i+1)+')');
+    const tabEl=document.getElementById('tab-sites');
+    if(document.hidden||!tabEl||!tabEl.classList.contains('active'))return null; // not looking at Sites - the next visit fetches fresh
+    if(onRetry)try{onRetry();}catch(e){}
+    await new Promise(r=>setTimeout(r,WIND_RETRY_MS[i]+Math.random()*800));
+    w=await fetchSiteWind(coords,true);
+  }
+  if(!w)log('wind fetch gave up for '+coords+': '+_windLastFail);
+  return w;
+}
 async function fetchSiteWind(coords,force){
   if(!coords)return null;
   const cached=_windCache[coords];
@@ -6513,9 +6530,9 @@ async function fetchSiteWind(coords,force){
     // deliberately.
     const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
     const r=await fetchWithTimeout(url,{},10000);
-    if(!r.ok)return null;
+    if(!r.ok){_windLastFail='HTTP '+r.status;return null;}
     const j=await r.json();
-    if(!j.current)return null;
+    if(!j.current){_windLastFail='reply had no current data';return null;}
     const result={
       speed:Math.round(j.current.wind_speed_10m),
       gust:Math.round(j.current.wind_gusts_10m),
@@ -6528,6 +6545,7 @@ async function fetchSiteWind(coords,force){
     _windCache[coords]={data:result,fetchedAt:Date.now()};
     return result;
   }catch(e){
+    _windLastFail=(e&&e.message)||'error';
     return null;
   }
 }
@@ -7690,7 +7708,7 @@ async function renderSiteNotesCardList(force,q=''){
   withDist.forEach(({uuid})=>{
     const coords=siteCoordsByUuid[uuid];
     if(!coords)return;
-    fetchSiteWind(coords,force).then(w=>{
+    fetchSiteWindRetry(coords,force,()=>{const sl=listEl.querySelector(`[data-windslot="${uuid}"]`);if(sl)sl.innerHTML='<span style="color:var(--text2);font-size:14px">Retrying…</span>';}).then(w=>{
       const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
       if(slot){
         if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span>';}
