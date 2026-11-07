@@ -1145,7 +1145,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v670';
+const APP_VERSION='v671';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7227,10 +7227,12 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   }
   const map=L.map('siteMapContainer',{zoomControl:true});
   _siteMapInstance=map;
+  _siteMapDropPin=null; // a fresh map starts with no dropped pin
   const siteMapReadingEl=document.getElementById('siteMapReading');
   siteMapReadingEl.style.display='none';
   map.on('move',()=>{
     if(siteMapReadingEl.style.display==='none')return; // only live-update once it's actually been revealed
+    if(_siteMapDropPin)return; // a dropped pin owns the readout - it shows the pin's spot, not wherever the map is panned to
     const c=map.getCenter().wrap();
     siteMapReadingEl.textContent=`${c.lat.toFixed(6)}, ${c.lng.toFixed(6)}`;
   });
@@ -7387,6 +7389,57 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   const dismissSiteMapOverlays=()=>{layerMenu.style.display='none';document.getElementById('siteMapSearchResults').style.display='none';};
   map.getContainer().addEventListener('click',dismissSiteMapOverlays);
   map.on('click movestart zoomstart',dismissSiteMapOverlays);
+  // Long-press anywhere on the map drops a pin there and shows its GPS coordinates in the
+  // same readout pill the coordinate search uses (same 📍 as the site-location picker).
+  // Done with plain pointer events rather than Leaflet's 'contextmenu' so it behaves the
+  // same on Android and iPhone. A tap on the map takes the pin away again.
+  const dropIcon=L.divIcon({html:'<div style="font-size:34px;line-height:34px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.5))">📍</div>',className:'',iconSize:[34,34],iconAnchor:[17,34]});
+  let _pressTimer=null,_pressId=null,_pressStart=null,_dropAt=0;
+  const cancelPress=()=>{if(_pressTimer){clearTimeout(_pressTimer);_pressTimer=null;}_pressId=null;};
+  const dropPinAt=ll=>{
+    const w=ll.wrap();
+    if(_siteMapDropPin)_siteMapDropPin.setLatLng(w);
+    else _siteMapDropPin=L.marker(w,{icon:dropIcon,interactive:false,keyboard:false}).addTo(map);
+    _dropAt=Date.now();
+    siteMapReadingEl.style.display='block';
+    siteMapReadingEl.textContent=`${w.lat.toFixed(6)}, ${w.lng.toFixed(6)}`;
+    if(navigator.vibrate){try{navigator.vibrate(20);}catch(e){}}
+  };
+  // Tapping the readout copies the coordinates (works for a dropped pin and for a coordinate search).
+  siteMapReadingEl.style.cursor='pointer';
+  siteMapReadingEl.onclick=async()=>{
+    const txt=siteMapReadingEl.textContent.trim();
+    if(!txt||txt==='Copied ✓')return;
+    let ok=false;
+    try{await navigator.clipboard.writeText(txt);ok=true;}catch(e){
+      try{ // older WebViews without the async clipboard
+        const ta=document.createElement('textarea');ta.value=txt;ta.style.cssText='position:fixed;opacity:0';
+        document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');ta.remove();
+      }catch(e2){}
+    }
+    if(!ok)return;
+    siteMapReadingEl.textContent='Copied ✓';
+    setTimeout(()=>{if(siteMapReadingEl.textContent==='Copied ✓')siteMapReadingEl.textContent=txt;},1200);
+  };
+  const mapEl=map.getContainer();
+  mapEl.addEventListener('pointerdown',e=>{
+    if(e.target.closest('.leaflet-control,.leaflet-marker-icon,button,input'))return;
+    if(_pressTimer){cancelPress();return;} // a second finger means pinch-zooming, not a press
+    if(e.pointerType==='mouse'&&e.button!==0)return;
+    _pressId=e.pointerId;_pressStart={x:e.clientX,y:e.clientY};
+    const pt={clientX:e.clientX,clientY:e.clientY};
+    _pressTimer=setTimeout(()=>{_pressTimer=null;dropPinAt(map.mouseEventToLatLng(pt));},500);
+  });
+  mapEl.addEventListener('pointermove',e=>{
+    if(_pressTimer&&e.pointerId===_pressId&&Math.hypot(e.clientX-_pressStart.x,e.clientY-_pressStart.y)>10)cancelPress();
+  });
+  ['pointerup','pointercancel'].forEach(t=>mapEl.addEventListener(t,cancelPress));
+  mapEl.addEventListener('contextmenu',e=>e.preventDefault()); // no browser "save image" menu on a long press
+  map.on('zoomstart',cancelPress);
+  map.on('click',()=>{
+    if(Date.now()-_dropAt<700)return; // the click that ends the long press itself
+    if(_siteMapDropPin){clearSiteMapDropPin();siteMapReadingEl.style.display='none';}
+  });
   const siteIcon=L.divIcon({html:'🚩',className:'site-map-pin',iconSize:[28,28],iconAnchor:[14,26]});
   const bounds=[];
   sitesWithCoords.forEach(({uuid,name,coords})=>{
@@ -7461,6 +7514,8 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
 }
 
 let _siteMapLastLoc=null;
+let _siteMapDropPin=null; // the pin dropped by a long press on the Sites map, if any
+function clearSiteMapDropPin(){if(_siteMapDropPin){_siteMapDropPin.remove();_siteMapDropPin=null;}}
 let _siteMapLastView=(()=>{ // {lat,lon,zoom} — remembers where you left the map, persisted per device (never synced), not reset by closing the app
   try{return JSON.parse(localStorage.getItem('leeside_mapLastView'));}catch(e){return null;}
 })();
@@ -7483,6 +7538,7 @@ async function runSiteMapSearch(){
   if(cp.error===undefined){
     _siteMapInstance.setView([cp.lat,cp.lon],15);
     resultsEl.style.display='none';
+    clearSiteMapDropPin();
     const readingEl=document.getElementById('siteMapReading');
     readingEl.style.display='block';
     readingEl.textContent=`${cp.lat.toFixed(6)}, ${cp.lon.toFixed(6)}`;
@@ -11216,6 +11272,7 @@ function wire(){
     const res=resultsEl._results[parseInt(row.dataset.searchresult)];
     _siteMapInstance.setView([parseFloat(res.lat),parseFloat(res.lon)],15);
     resultsEl.style.display='none';
+    clearSiteMapDropPin();
     const readingEl=document.getElementById('siteMapReading');
     readingEl.style.display='block';
     readingEl.textContent=`${parseFloat(res.lat).toFixed(6)}, ${parseFloat(res.lon).toFixed(6)}`;
