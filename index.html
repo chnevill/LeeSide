@@ -852,10 +852,7 @@ body.theme-light .star-input button,body.theme-terra .star-input button{color:rg
 
 <!-- EDIT SITE NOTES EXPAND OVERLAY -->
 <div id="editSiteNotesOverlay" style="display:none;position:fixed;inset:0;z-index:200;background:var(--bg2);flex-direction:column;overflow-y:auto">
-  <div style="padding:16px 22px 8px;flex-shrink:0">
-    <div class="fg" style="margin-bottom:0"><label>Note heading</label><input type="text" id="esTitle" placeholder="Defaults to site name"></div>
-  </div>
-  <div style="padding:8px 22px 0;flex-shrink:0;display:flex;align-items:center;justify-content:space-between">
+  <div style="padding:16px 22px 0;flex-shrink:0;display:flex;align-items:center;justify-content:space-between">
     <div style="font-size:var(--fs-lbl);font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">NOTES</div>
     <button id="esNotesDoneBtn" style="background:var(--gold);border:none;border-radius:50px;color:#040a10;font-family:'Syne',sans-serif;font-weight:700;font-size:14px;padding:8px 20px;cursor:pointer">Done</button>
   </div>
@@ -1145,7 +1142,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v672';
+const APP_VERSION='v673';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7944,14 +7941,14 @@ function showNoteView(nid,siteKey){
     const headerHtml=isDesktopPlatform?`
       <div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px">
-          <div id="noteViewTitle" class="detail-site" style="flex:1;min-width:0">${n.title||curName}</div>
+          <div id="noteViewTitle" class="detail-site" style="flex:1;min-width:0">${curName}</div>
           <div id="noteViewWindSlot" style="flex-shrink:0">${windBlock}</div>
         </div>
         ${distRow}
         ${buttonsRow}
       </div>`:`
       <div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border);position:relative">
-        <div id="noteViewTitle" class="detail-site" style="padding-right:${w?'90px':'0'}">${n.title||curName}</div>
+        <div id="noteViewTitle" class="detail-site" style="padding-right:${w?'90px':'0'}">${curName}</div>
         <div id="noteViewWindSlot" style="position:absolute;top:0;right:0">${windBlock}</div>
         ${distRow}
         ${buttonsRow}
@@ -9640,7 +9637,6 @@ function openEditSiteModal(name){
   document.getElementById('esCoords').value=(_editSiteUuid&&siteCoordsByUuid[_editSiteUuid])||'';
   document.getElementById('esCountry').value=_editSiteUuid?countryNameToAlpha3(siteCountryByUuid[_editSiteUuid]):'';
   const existingNote=_editSiteUuid?siteNotesByUuid[_editSiteUuid]:null;
-  document.getElementById('esTitle').value=(existingNote&&existingNote.title)||name||'';
   document.getElementById('esNote').value=(existingNote&&existingNote.body)||'';
   document.getElementById('esNewLaunch').value='';
   esExPhotos=existingNote&&existingNote.photos?existingNote.photos.map(p=>typeof p==='object'&&p?{...p}:p):[];
@@ -10237,7 +10233,10 @@ async function saveSiteEdit(){
   }
   const countryCode=document.getElementById('esCountry').value.trim();
   const country=countryCode?(alpha3ToCountryName(countryCode)||countryCode.toUpperCase()):null;
-  const title=document.getElementById('esTitle').value.trim();
+  // v673: a site's note no longer has a heading of its own. The stored title is always the site's current name
+  // (kept so older app versions, backups and shared-site export/import keep working exactly as before), and
+  // the site page shows the live site name, so renaming a site can never leave a stale heading behind.
+  const title=newName;
   const noteBody=document.getElementById('esNote').value.trim();
   const oldName=_editSiteOriginalName;
 
