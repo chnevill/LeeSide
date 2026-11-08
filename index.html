@@ -1142,7 +1142,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v675';
+const APP_VERSION='v674';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -8022,7 +8022,7 @@ function showNoteView(nid,siteKey){
       const freshCoords=_curUuid?siteCoordsByUuid[_curUuid]:null;
       if(!freshCoords)return; // coordinates removed since this view was rendered (e.g. synced from another device) - the button's still visible until the next render, but nothing valid left to open
       const[lat,lon]=freshCoords.split(',').map(parseFloat);
-      openExternalWithDataCheck(null,`https://earth.google.com/web/@${lat},${lon},100000a,10000d,35y,0h,60t,0r`,'Google Earth');
+      openExternalWithDataCheck(null,`https://earth.google.com/web/@${lat},${lon},100000a,10000d`,'Google Earth');
     };
     const airspaceBtn=document.getElementById('noteViewAirspaceBtn');
     if(airspaceBtn)airspaceBtn.onclick=()=>{
