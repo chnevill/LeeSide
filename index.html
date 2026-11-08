@@ -1142,7 +1142,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v673';
+const APP_VERSION='v674';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -1222,6 +1222,7 @@ function logAuthEvent(event){
 // otherwise had no reliable place to log to since they aren't sync events.
 function plog(...args){logAuthEvent(args.map(a=>typeof a==='object'?JSON.stringify(a):a).join(' '));}
 
+let _expiryRetryBusy=false; // v674: guards the single extra quiet renewal try before the sign-in wall
 let _tokenRefreshPromise=null; // single-flight — every concurrent caller shares this same promise
                                  // instead of each kicking off its own separate token request,
                                  // which was the actual cause of the repeated 3-4x pile-ups seen
@@ -1434,7 +1435,28 @@ function scheduleTokenRefresh(){
     // surfaced at all, and even then through the same safe, gated path used
     // everywhere else tonight - never interrupts an open screen, never shown
     // while still offline.
-    if(Date.now()>=_tokenExpiry)showSignInScreen();
+    if(Date.now()>=_tokenExpiry){
+      // v674: an iPhone that has slept for hours often wakes this timer before its quiet
+      // renewal can get an answer from Google (the page is still being throttled), so the
+      // 9s wait ran out and the full-screen sign-in wall appeared for ~20s until the next
+      // attempt succeeded on its own (seen in the log on 9/26, 10/3, 10/27 x2, 11/7).
+      // Give it exactly ONE more quiet try, only while the app is on screen and online,
+      // before showing the wall. A failed retry falls straight through to the old behaviour.
+      if(!_expiryRetryBusy&&!document.hidden&&navigator.onLine){
+        _expiryRetryBusy=true;
+        try{
+          logAuthEvent('quiet renewal got no answer after wake-up; trying once more before showing the sign-in screen');
+          await new Promise(r=>setTimeout(r,2500));
+          if(!userInfo)return; // signed out while we waited
+          if(accessToken&&_tokenExpiry>Date.now())return; // something else already renewed it
+          if(!document.hidden&&navigator.onLine){
+            const ok2=await refreshToken(false,false);
+            if(ok2)return;
+          }
+        }finally{_expiryRetryBusy=false;}
+      }
+      showSignInScreen();
+    }
     else _tokenRefreshTimer=setTimeout(scheduleTokenRefresh,60000);
   },refreshIn);
 }
