@@ -1,4 +1,6 @@
-const CACHE='leeside-v669';
+const CACHE='leeside-v687';
+// v676: holds one file shared to LeeSide from another app until the page picks it up
+const SHARE_CACHE='leeside-share';
 const URLS=[
   '/LeeSide/',
   '/LeeSide/index.html'
@@ -52,7 +54,7 @@ self.addEventListener('install',e=>{
 self.addEventListener('activate',e=>{
   e.waitUntil(
     caches.keys().then(keys=>Promise.all(
-      keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))
+      keys.filter(k=>k!==CACHE&&k!==SHARE_CACHE).map(k=>caches.delete(k)) // v676: keep a file that was just shared to the app
     )).then(()=>self.clients.claim())
   );
 });
@@ -127,7 +129,25 @@ async function checkAndUpdateCache(request,cachedResponse){
   }catch(err){/* offline or check failed - fine, cache stays exactly as it was */}
 }
 
+// v676: Android share sheet -> LeeSide. The manifest's share_target POSTs the shared file here;
+// park its text for the page and send the browser on to the normal app page.
+async function handleShareTarget(request){
+  try{
+    const fd=await request.formData();
+    const f=fd.get('igc');
+    if(f&&typeof f!=='string'){
+      const text=await f.text();
+      const c=await caches.open(SHARE_CACHE);
+      await c.put('/LeeSide/pending-igc',new Response(text));
+    }
+  }catch(err){/* nothing parked - the app just opens normally */}
+  return Response.redirect(new URL('/LeeSide/',self.location.href).href,303);
+}
 self.addEventListener('fetch',e=>{
+  if(e.request.method==='POST'){
+    if(new URL(e.request.url).pathname==='/LeeSide/share-target')e.respondWith(handleShareTarget(e.request));
+    return;
+  }
   if(e.request.method!=='GET')return;
   const url=new URL(e.request.url);
   // Was matching ANY same-origin request, not just the app's own known files -
