@@ -1142,7 +1142,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v674';
+const APP_VERSION='v675';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7488,12 +7488,13 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   // rather than coincidentally working depending on how fast the modal happens to open.
   map.invalidateSize();
   const focusRec=focusSite?sites.find(s=>!s._deleted&&(s.uuid===focusSite||s.name===focusSite)):null;
+  _siteMapOpenedFocused=!!((focusRec&&focusRec.coords)||focusPoint); // v675: opened to a specific site/point, so don't recenter on resume
   if(focusRec&&focusRec.coords){
     const[fLat,fLon]=focusRec.coords.split(',').map(parseFloat);
     map.setView([fLat,fLon],14);
   } else if(focusPoint){
     map.setView([focusPoint.lat,focusPoint.lon],14);
-  } else if(_siteMapLastView){
+  } else if(_siteMapLastView&&(Date.now()-_siteMapLastViewAt)<SITE_MAP_STALE_MS){
     // Not asked to jump to a specific site — restore wherever the map was last
     // left, rather than resetting to the local area every time it reopens.
     // Persisted per device (localStorage, not synced), so this survives fully
@@ -7528,11 +7529,30 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   map.on('moveend',()=>{
     const c=map.getCenter();
     _siteMapLastView={lat:c.lat,lon:c.lng,zoom:map.getZoom()};
-    localStorage.setItem('leeside_mapLastView',JSON.stringify(_siteMapLastView));
+    _siteMapLastViewAt=Date.now();
+    try{localStorage.setItem('leeside_mapLastView',JSON.stringify(_siteMapLastView));localStorage.setItem('leeside_mapLastViewAt',String(_siteMapLastViewAt));}catch(e){}
   });
 }
 
 let _siteMapLastLoc=null;
+// v675: where the map was left is only remembered for 30 minutes. After longer than that (map
+// unused, or app in the background) it goes back to your current area instead.
+const SITE_MAP_STALE_MS=30*60*1000;
+let _siteMapLastViewAt=(()=>{try{return parseInt(localStorage.getItem('leeside_mapLastViewAt'),10)||0;}catch(e){return 0;}})();
+let _siteMapOpenedFocused=false;
+let _siteMapHiddenAt=0;
+document.addEventListener('visibilitychange',async()=>{
+  if(document.hidden){_siteMapHiddenAt=Date.now();return;}
+  const away=_siteMapHiddenAt?Date.now()-_siteMapHiddenAt:0;
+  _siteMapHiddenAt=0;
+  const ov=document.getElementById('siteMapOverlay');
+  if(away<SITE_MAP_STALE_MS||!_siteMapInstance||!ov||!ov.classList.contains('open'))return;
+  if(_siteMapOpenedFocused||_siteMapDropPin)return; // looking at a specific site / a dropped pin - leave it
+  const loc=await getCurrentLocation(true).catch(()=>null);
+  if(!loc||!_siteMapInstance||!ov.classList.contains('open'))return; // no fix: stay where we are, no alert
+  _siteMapLastLoc=loc;
+  _siteMapInstance.setView([loc.lat,loc.lon],10);
+});
 let _siteMapDropPin=null; // the pin dropped by a long press on the Sites map, if any
 function clearSiteMapDropPin(){if(_siteMapDropPin){_siteMapDropPin.remove();_siteMapDropPin=null;}}
 let _siteMapLastView=(()=>{ // {lat,lon,zoom} — remembers where you left the map, persisted per device (never synced), not reset by closing the app
