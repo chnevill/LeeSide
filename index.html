@@ -5675,7 +5675,11 @@ async function igcApplyToNewFlight(text){
   let wingNote='';
   if(r.glider){
     const gl=r.glider.toLowerCase();
-    const w=gearOrderedList('wing').map(x=>x.name).filter(Boolean).find(n=>{const nl=n.toLowerCase();return nl===gl||nl.includes(gl)||gl.includes(nl);});
+    // exact name wins; otherwise a single partial match (the logger's wing list is often a
+    // shorter name than yours, e.g. "BGD Epic" vs "BGD Epic 2"); more than one -> don't guess
+    const names=gearOrderedList('wing').map(x=>x.name).filter(Boolean);
+    let w=names.find(n=>n.toLowerCase()===gl);
+    if(!w){const part=names.filter(n=>{const nl=n.toLowerCase();return nl.includes(gl)||gl.includes(nl);});if(part.length===1)w=part[0];}
     if(w){selectFlightGear('fWingSelect',w);wingNote='\nWing: '+w;}
   }
   await showAlert('Filled in from the IGC file - check it, then tap Save.\n\n'+r.date+' '+r.time+', '+r.durH+'h '+r.durM+'m\n'+siteNote+wingNote);
