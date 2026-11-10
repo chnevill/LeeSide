@@ -6,6 +6,19 @@
   "theme_color": "#060d1a",
   "start_url": ".",
   "scope": ".",
+  "share_target": {
+    "action": "/LeeSide/share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "igc",
+          "accept": [".igc", "application/octet-stream", "text/plain", "application/x-igc"]
+        }
+      ]
+    }
+  },
   "icons": [
     {
       "src": "icon-192.png",

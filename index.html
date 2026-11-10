@@ -577,6 +577,10 @@ body.theme-light .star-input button,body.theme-terra .star-input button{color:rg
 <div class="sheet" id="flightSheet">
   <div class="handle"></div>
   <div class="sheet-title" id="flightTitle">Log a Flight</div>
+  <div id="igcImportRow" style="margin:0 0 12px">
+    <button class="btn btn-ghost" id="igcImportBtn" type="button" style="margin:0;width:100%">📂 Import from IGC file</button>
+    <input type="file" id="igcFileInput" style="display:none">
+  </div>
   <div class="fg"><label>📍 Site</label>
     <select id="fSiteSelect"><option value="">Select site…</option></select>
     <input type="text" id="fSiteNew" placeholder="Type new site name…" style="display:none;margin-top:8px" autocomplete="off">
@@ -1142,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v675';
+const APP_VERSION='v676';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -4164,6 +4168,7 @@ function showApp(){
   // until a real scroll. Tying this to the actual moment the app becomes
   // visible, right here, replaces the guess with the real event.
   _syncNavGradientPosition();
+  setTimeout(igcCheckPendingShare,700); // v676: a file shared to LeeSide from another app
 }
 
 // Set when an AUTOMATIC trigger (a background token-refresh failure, or a
@@ -5581,6 +5586,139 @@ function applySmartLaunchTypeDefault(site){
 // ═══════════════════════════════════════
 // OPEN FLIGHT MODAL
 // ═══════════════════════════════════════
+// ═══════════════════════════════════════
+// IGC IMPORT (v676)
+// Reads a .igc track file and pre-fills a NEW flight form. Nothing is saved until the
+// person reviews it and taps Save; the track itself is not stored anywhere.
+// ═══════════════════════════════════════
+function parseIGC(text){
+  const lines=String(text).split(/\r?\n/);
+  const out={y:0,m:0,d:0,tz:null,glider:'',pts:[]};
+  let dayOff=0,prevT=-1;
+  for(const raw of lines){
+    const l=raw.trim();if(!l)continue;
+    const c=l[0];
+    if(c==='H'){
+      let m;
+      if(l.startsWith('HFDTE')&&(m=l.match(/^HFDTE(?:DATE:)?(\d{2})(\d{2})(\d{2})/))){out.d=+m[1];out.m=+m[2];out.y=2000+(+m[3]);}
+      else if(l.startsWith('HFTZN')&&(m=l.match(/^HFTZN(?:TIMEZONE)?:?\s*(-?\d+(?:\.\d+)?)/)))out.tz=parseFloat(m[1]);
+      else if(l.startsWith('HFGTY')&&(m=l.match(/^HFGTY(?:GLIDERTYPE)?:?\s*(.*)$/)))out.glider=(m[1]||'').trim();
+    }else if(c==='B'&&l.length>=35){
+      let t=(+l.slice(1,3))*3600+(+l.slice(3,5))*60+(+l.slice(5,7));
+      if(prevT>=0&&t+dayOff<prevT)dayOff+=86400; // track ran past midnight UTC
+      t+=dayOff;prevT=t;
+      let lat=(+l.slice(7,9))+(+(l.slice(9,14)))/60000;if(l[14]==='S')lat=-lat;
+      let lon=(+l.slice(15,18))+(+(l.slice(18,23)))/60000;if(l[23]==='W')lon=-lon;
+      const palt=parseInt(l.slice(25,30),10),galt=parseInt(l.slice(30,35),10);
+      if(!isFinite(lat)||!isFinite(lon)||!isFinite(t))continue;
+      out.pts.push({t,lat,lon,palt:isFinite(palt)?palt:0,galt:isFinite(galt)?galt:0});
+    }
+  }
+  return out;
+}
+function igcSummarize(text){
+  const g=parseIGC(text);
+  if(!g.y||g.pts.length<10)return {error:"That doesn't look like a valid IGC flight file (no date or track points found)."};
+  const P=g.pts,N=P.length,LB=10;
+  // moving = ground speed over the previous 10 s above 3 m/s; first and last such point bound the flight
+  let first=-1,last=-1;
+  for(let i=LB;i<N;i++){
+    const dt=P[i].t-P[i-LB].t;if(dt<=0)continue;
+    const v=haversineKm(P[i-LB].lat,P[i-LB].lon,P[i].lat,P[i].lon)*1000/dt;
+    if(v>3){if(first<0)first=i;last=i;}
+  }
+  if(first<0)return {error:"No flight found in that file - the track never moves fast enough to be a flight."};
+  const a=first,b=last;
+  const durMin=Math.max(0,Math.floor((P[b].t-P[a].t)/60));
+  // local clock time of takeoff: header time zone if present, otherwise this device's zone
+  const baseUtc=Date.UTC(g.y,g.m-1,g.d)+P[a].t*1000;
+  const tz=(g.tz!==null)?g.tz:-new Date(baseUtc).getTimezoneOffset()/60;
+  const L=new Date(baseUtc+tz*3600*1000);
+  const pad=n=>String(n).padStart(2,'0');
+  const date=L.getUTCFullYear()+'-'+pad(L.getUTCMonth()+1)+'-'+pad(L.getUTCDate());
+  const time=pad(L.getUTCHours())+':'+pad(L.getUTCMinutes());
+  // max altitude above sea level: GPS altitude, median of 5 so a single bad reading can't win;
+  // falls back to pressure altitude only if the file has no GPS altitude at all
+  const seg=P.slice(a,b+1);
+  const useG=seg.some(p=>p.galt>0);
+  const alts=seg.map(p=>useG?p.galt:p.palt);
+  let maxAlt=-Infinity;
+  for(let i=0;i<alts.length;i++){
+    const w=alts.slice(Math.max(0,i-2),Math.min(alts.length,i+3)).sort((x,y)=>x-y);
+    const med=w[Math.floor(w.length/2)];
+    if(med>maxAlt)maxAlt=med;
+  }
+  if(!isFinite(maxAlt))maxAlt=0;
+  // whole track length between takeoff and landing
+  let km=0;
+  for(let i=a;i<b;i++)km+=haversineKm(P[i].lat,P[i].lon,P[i+1].lat,P[i+1].lon);
+  return {date,time,durH:Math.floor(durMin/60),durM:durMin%60,maxAltM:maxAlt,trackKm:km,
+          takeoff:{lat:P[a].lat,lon:P[a].lon},glider:g.glider,points:N};
+}
+async function igcApplyToNewFlight(text){
+  const r=igcSummarize(text);
+  if(r.error){await showAlert(r.error);return;}
+  // already logged? same date and a takeoff time within 10 minutes of an existing flight
+  const tm=t=>{const m=String(t||'').match(/^(\d{1,2}):(\d{2})/);return m?(+m[1])*60+(+m[2]):null;};
+  const mine=tm(r.time);
+  const dup=activeFlights().find(f=>f.date===r.date&&tm(f.time)!==null&&Math.abs(tm(f.time)-mine)<=10);
+  if(dup&&!await showConfirm('A flight on '+r.date+' at '+(dup.time||'')+' is already in your logbook. Import this one anyway?','Import anyway','warn'))return;
+  await openFlightModal(null);
+  const au=settings.altUnit||'m',du=settings.distUnit||'km';
+  document.getElementById('fDate').value=r.date;
+  document.getElementById('fTime').value=r.time;
+  npSetHM(r.durH,r.durM);
+  document.getElementById('fAlt').value=Math.round(au==='m'?r.maxAltM:r.maxAltM*M_TO_FT);
+  document.getElementById('fDist').value=Math.round(du==='mi'?r.trackKm*0.621371:r.trackKm);
+  // nearest saved site to the takeoff point, if one is within 3 km
+  let best=null,bestKm=Infinity;
+  Object.keys(siteData).forEach(name=>{
+    const c=siteCoords[name];if(!c)return;
+    const [la,lo]=String(c).split(',').map(parseFloat);if(!isFinite(la)||!isFinite(lo))return;
+    const k=haversineKm(r.takeoff.lat,r.takeoff.lon,la,lo);
+    if(k<bestKm){bestKm=k;best=name;}
+  });
+  let siteNote;
+  if(best&&bestKm<=3){
+    buildSiteDropdown(best);
+    document.getElementById('fSiteSelect').value=best;
+    buildLaunchDropdown('',best);
+    applySmartLaunchTypeDefault(best);
+    siteNote='Site: '+best+' ('+bestKm.toFixed(1)+' km from takeoff)';
+  }else{
+    buildSiteDropdown('');buildLaunchDropdown('',null);
+    document.getElementById('fSiteSelect').value='';
+    siteNote='No saved site within 3 km of takeoff - pick one.';
+  }
+  // wing: only if the file's glider name matches one of your wings
+  let wingNote='';
+  if(r.glider){
+    const gl=r.glider.toLowerCase();
+    const w=gearOrderedList('wing').map(x=>x.name).filter(Boolean).find(n=>{const nl=n.toLowerCase();return nl===gl||nl.includes(gl)||gl.includes(nl);});
+    if(w){selectFlightGear('fWingSelect',w);wingNote='\nWing: '+w;}
+  }
+  await showAlert('Filled in from the IGC file - check it, then tap Save.\n\n'+r.date+' '+r.time+', '+r.durH+'h '+r.durM+'m\n'+siteNote+wingNote);
+}
+async function igcImportFile(file){
+  if(!file)return;
+  let text;
+  try{text=await file.text();}catch(e){await showAlert("Couldn't read that file.");return;}
+  await igcApplyToNewFlight(text);
+}
+// A file shared to LeeSide from another app (Android share sheet) is parked by the service
+// worker; pick it up here once the app is showing.
+async function igcCheckPendingShare(){
+  try{
+    if(!('caches' in window))return;
+    const c=await caches.open('leeside-share');
+    const r=await c.match('/LeeSide/pending-igc');
+    if(!r)return;
+    const text=await r.text();
+    await c.delete('/LeeSide/pending-igc');
+    await igcApplyToNewFlight(text);
+  }catch(e){}
+}
+
 async function openFlightModal(editId){
   editFlightId=editId||null;
   _oneTimeLocationActive=false;
@@ -5592,6 +5730,7 @@ async function openFlightModal(editId){
   document.getElementById('flightTitle').textContent='🛩️ '+(editId?'Edit Flight':'Log a Flight');
   document.getElementById('saveFlightBtn').textContent='Save';
   document.getElementById('deleteFlightBtn').style.display=editId?'block':'none';
+  document.getElementById('igcImportRow').style.display=editId?'none':'block'; // v676: import only when logging a new flight
   document.getElementById('flightAddPhotoBtn').style.gridColumn=editId?'':'span 2';
   const now=new Date();
   const localDate=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
@@ -11054,6 +11193,11 @@ function wire(){
     }
   });
   document.getElementById('deleteFlightBtn').addEventListener('click',deleteFlight);
+  document.getElementById('igcImportBtn').addEventListener('click',()=>document.getElementById('igcFileInput').click());
+  document.getElementById('igcFileInput').addEventListener('change',async e=>{
+    const f=e.target.files&&e.target.files[0];e.target.value='';
+    await igcImportFile(f);
+  });
   document.getElementById('cancelFlightBtn').addEventListener('click',()=>{
     document.getElementById('flightNotesOverlay').style.display='none';
     closeOverlay('flightOverlay');
