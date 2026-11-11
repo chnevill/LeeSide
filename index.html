@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v676';
+const APP_VERSION='v677';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6514,12 +6514,21 @@ function haversineKm(lat1,lon1,lat2,lon2){
   const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
+// v677: why a location lookup failed, written to the Sign-in log (at most one entry per 30 s) so a
+// "Location unavailable" on a particular phone can be diagnosed instead of guessed at.
+let _locLogAt=0;
+function _logLocFail(what){
+  if(Date.now()-_locLogAt<30000)return;
+  _locLogAt=Date.now();
+  try{logAuthEvent('location lookup failed: '+what+(document.hidden?' (app hidden)':''));}catch(e){}
+}
 function getCurrentLocation(force){
+  let answered=false;
   const geoPromise=new Promise(resolve=>{
-    if(!navigator.geolocation){resolve(null);return;}
+    if(!navigator.geolocation){_logLocFail('no geolocation support');resolve(null);return;}
     navigator.geolocation.getCurrentPosition(
-      pos=>resolve({lat:pos.coords.latitude,lon:pos.coords.longitude}),
-      ()=>resolve(null),
+      pos=>{answered=true;resolve({lat:pos.coords.latitude,lon:pos.coords.longitude});},
+      err=>{answered=true;_logLocFail('error code '+(err&&err.code)+' ('+({1:'permission denied',2:'position unavailable',3:'timed out'}[err&&err.code]||'unknown')+')'+(err&&err.message?': '+err.message:''));resolve(null);},
       {timeout:8000,maximumAge:force?0:300000}
     );
   });
@@ -6530,7 +6539,7 @@ function getCurrentLocation(force){
   // with no way to recover short of fully closing and reopening the app.
   // This independent JS-level timeout guarantees a resolution regardless of
   // whether the native API's own timeout actually fires.
-  const fallback=new Promise(resolve=>setTimeout(()=>resolve(null),10000));
+  const fallback=new Promise(resolve=>setTimeout(()=>{if(!answered)_logLocFail('no answer from the phone after 10 s');resolve(null);},10000));
   return Promise.race([geoPromise,fallback]);
 }
 // Raw "lat,lon" coordinates have no spaces, so browsers treat the whole string as one
