@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v677';
+const APP_VERSION='v678';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -1226,6 +1226,7 @@ function logAuthEvent(event){
 // otherwise had no reliable place to log to since they aren't sync events.
 function plog(...args){logAuthEvent(args.map(a=>typeof a==='object'?JSON.stringify(a):a).join(' '));}
 
+let _signInFailNote=''; // v678: specific reason from Google's own 'window failed/closed' message, shown on the failed-sign-in banner
 let _expiryRetryBusy=false; // v674: guards the single extra quiet renewal try before the sign-in wall
 let _tokenRefreshPromise=null; // single-flight — every concurrent caller shares this same promise
                                  // instead of each kicking off its own separate token request,
@@ -1267,10 +1268,10 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
       return;
     }
     try{
-      let settled=false;
+      let settled=false,timedOut=false;
       const giveUp=()=>{
         if(settled)return;
-        settled=true;
+        settled=true;timedOut=true;
         _authPopupInFlight=false;
         logAuthEvent('token refresh timed out with no response'+(interactive?' — interactive flow took too long (90s)':' — likely abandoned mid-flight (app backgrounded)')+(showFailureScreen?'':' — background attempt, failing quietly'));
         // A timeout is silence, not a rejection - it doesn't mean Google said no, it means
@@ -1288,8 +1289,24 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
       // // an interactive flow means a real person reading and tapping through Google's own screens (the unverified-app warning, then consent) — 9s was only ever enough for a fast, silent attempt with no human in the loop
       const client=google.accounts.oauth2.initTokenClient({
         client_id:CLIENT_ID,scope:SCOPES,
+        // v678: Google reports 'window failed to open' / 'window closed' here; before this nothing listened and the app waited out the full timer
+        error_callback:err=>{
+          const type=(err&&err.type)||'unknown';
+          logAuthEvent('Google sign-in window: '+type+(err&&err.message?' — '+err.message:''));
+          if(settled)return;
+          settled=true;_authPopupInFlight=false;clearTimeout(timeoutId);
+          if(type==='popup_failed_to_open')_signInFailNote="Google's sign-in window was blocked from opening — tap to try again";
+          else if(type==='popup_closed')_signInFailNote='The Google sign-in window was closed before it finished — tap to try again';
+          if(showFailureScreen)accessToken=null;
+          localSave();if(showFailureScreen)showSignInScreen();resolve(false);
+        },
         callback:async resp=>{
-          if(settled)return; // the timeout already gave up on this attempt — ignore a late response
+          let late=false;
+          if(settled){
+            // v678: a good reply that arrives after our timer is accepted (once), only if we have no valid token now; it goes through the same checks below
+            if(timedOut&&resp&&!resp.error&&!(accessToken&&_tokenExpiry>Date.now()+60000)){late=true;timedOut=false;logAuthEvent('sign-in reply arrived after the timer — checking it instead of discarding it');}
+            else{logAuthEvent('late or duplicate sign-in reply ignored'+(resp&&resp.error?' ('+resp.error+')':''));return;}
+          }
           settled=true;
           _authPopupInFlight=false;
           clearTimeout(timeoutId);
@@ -1312,12 +1329,12 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
               _needDriveConsent=true;
               logAuthEvent('sign-in finished but Google Drive access was NOT allowed (permissions given: '+resp.scope.replace(/https:\/\/www\.googleapis\.com\/auth\//g,'')+')');
               localSave();
-              if(interactive)await showAlert('Google signed you in but did not give LeeSide permission to use your Google Drive, so nothing can sync. Tap the reconnect banner again and, on Google\'s screen, tick the box for Google Drive.');
+              if(interactive&&!late)await showAlert('Google signed you in but did not give LeeSide permission to use your Google Drive, so nothing can sync. Tap the reconnect banner again and, on Google\'s screen, tick the box for Google Drive.');
               resolve(false);
               return;
             }
             let identityResult=null;
-            if(interactive||!userInfo?.email)identityResult=await fetchUserInfo(newToken); // interactive attempts always verify, since Google's account picker is the only realistic way this device ends up authenticated as someone different. Silent background refreshes skip this extra check (only when nothing's cached yet) since they're hinted to the same account and can't switch on their own
+            if(interactive||late||!userInfo?.email)identityResult=await fetchUserInfo(newToken); // interactive attempts always verify, since Google's account picker is the only realistic way this device ends up authenticated as someone different. Silent background refreshes skip this extra check (only when nothing's cached yet) since they're hinted to the same account and can't switch on their own
             if(identityResult&&identityResult.blocked){
               // A different Google account than whatever's already set up on this
               // device tried to sign in - refuse it outright. accessToken was never
@@ -1338,10 +1355,11 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
             accessToken=newToken;
             _needDriveConsent=false;
             _tokenExpiry=Date.now()+3600*1000;
-            logAuthEvent('token refresh succeeded');
+            logAuthEvent(late?'token refresh succeeded (late reply accepted)':'token refresh succeeded');
             scheduleTokenRefresh();
             localSave();
             if(!document.getElementById('signinScreen').classList.contains('hidden'))showApp();
+            if(late){syncFromDrive(0,false,false,'late sign-in accepted');}
             resolve(true);
           }else{
             logAuthEvent('token refresh failed ('+resp.error+'), signing out'+(showFailureScreen?'':' — background attempt, failing quietly'));
@@ -3151,6 +3169,7 @@ async function signInWithGoogle(){
   const progressTimer=setTimeout(()=>{
     if(btn)btn.textContent='Still connecting…';
   },8000);
+  _signInFailNote='';
   const ok=await refreshToken(true,true);
   clearTimeout(progressTimer);
   if(ok){
@@ -3159,7 +3178,7 @@ async function signInWithGoogle(){
     localSave();
     syncFromDrive(0,false,true,'interactive sign-in just completed');
   }else{
-    showSync(_needDriveConsent?'Google Drive access was not allowed — tap again and tick the Drive box':'Sign-in unavailable — check your connection and try again','error');
+    showSync(_needDriveConsent?'Google Drive access was not allowed — tap again and tick the Drive box':(_signInFailNote||'Sign-in unavailable — check your connection and try again'),'error');
     // Found 9/30: without this, a known device (userInfo already present,
     // local data already there) stayed stuck on this screen indefinitely if
     // the attempt failed - identical to the "online per navigator.onLine,
