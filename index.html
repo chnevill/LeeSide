@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v679';
+const APP_VERSION='v680';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -1908,6 +1908,17 @@ function showBrokenPhotosViewer(){
   panel.append(header,body);
   document.body.appendChild(panel);
 }
+// v680: forecasts (Open-Meteo) are counted on their own line - they are NOT added to the sync down/up totals, so those numbers mean exactly what they did before.
+// Size = the reply body as the app reads it (the phone's real cellular use is a little lower because replies are compressed in transit).
+function recordForecastBytes(bytes){
+  const day=localDateStr(new Date());
+  if(!syncDataLog[day])syncDataLog[day]={down:0,up:0,cellDown:0,cellUp:0};
+  const e=syncDataLog[day];
+  e.wxBytes=(e.wxBytes||0)+(bytes||0);
+  e.wxCount=(e.wxCount||0)+1;
+  if(!isOnWifi())e.wxCell=(e.wxCell||0)+(bytes||0);
+  localSave();
+}
 function showSyncDataUsageViewer(){
   const existing=document.getElementById('_syncDataPanel');
   if(existing){existing.remove();return;}
@@ -1915,11 +1926,12 @@ function showSyncDataUsageViewer(){
   const totalFor=n=>{
     const cutoff=new Date();cutoff.setDate(cutoff.getDate()-(n-1));
     const cutoffStr=localDateStr(cutoff);
-    let down=0,up=0,cellDown=0,cellUp=0;
-    days.forEach(d=>{if(d>=cutoffStr){down+=syncDataLog[d].down;up+=syncDataLog[d].up;cellDown+=syncDataLog[d].cellDown||0;cellUp+=syncDataLog[d].cellUp||0;}});
-    return{down,up,cellDown,cellUp};
+    let down=0,up=0,cellDown=0,cellUp=0,wx=0,wxN=0,wxCell=0;
+    days.forEach(d=>{if(d>=cutoffStr){down+=syncDataLog[d].down;up+=syncDataLog[d].up;cellDown+=syncDataLog[d].cellDown||0;cellUp+=syncDataLog[d].cellUp||0;wx+=syncDataLog[d].wxBytes||0;wxN+=syncDataLog[d].wxCount||0;wxCell+=syncDataLog[d].wxCell||0;}});
+    return{down,up,cellDown,cellUp,wx,wxN,wxCell};
   };
   const today=totalFor(1),week=totalFor(7),month=totalFor(30);
+  const wxLine=t=>`${fmtBytes(t.wx)} in ${t.wxN} request${t.wxN===1?'':'s'}${t.wxCell>0?` (${fmtBytes(t.wxCell)} cellular)`:''}`;
   const cellLine=t=>t.cellDown+t.cellUp>0?` — <strong style="color:#f2a92e">${fmtBytes(t.cellDown+t.cellUp)} cellular</strong>`:' — 0 B cellular';
   const panel=document.createElement('div');
   panel.id='_syncDataPanel';
@@ -1936,6 +1948,7 @@ function showSyncDataUsageViewer(){
     const lines=[`Today: ${fmtBytes(today.down+today.up)} (${fmtBytes(today.down)} down, ${fmtBytes(today.up)} up) — ${fmtBytes(today.cellDown+today.cellUp)} cellular`,
       `Last 7 days: ${fmtBytes(week.down+week.up)} (${fmtBytes(week.down)} down, ${fmtBytes(week.up)} up) — ${fmtBytes(week.cellDown+week.cellUp)} cellular`,
       `Last 30 days: ${fmtBytes(month.down+month.up)} (${fmtBytes(month.down)} down, ${fmtBytes(month.up)} up) — ${fmtBytes(month.cellDown+month.cellUp)} cellular`,'',
+      `Forecasts (separate from the above) — today: ${wxLine(today)}; 7 days: ${wxLine(week)}; 30 days: ${wxLine(month)}`,'',
       ...days.map(d=>`${d}  —  ${fmtBytes(syncDataLog[d].down+syncDataLog[d].up)} (${fmtBytes(syncDataLog[d].down)} down, ${fmtBytes(syncDataLog[d].up)} up) — ${fmtBytes((syncDataLog[d].cellDown||0)+(syncDataLog[d].cellUp||0))} cellular`)];
     try{await navigator.clipboard.writeText(lines.join('\n'));copyBtn.textContent='Copied!';setTimeout(()=>{copyBtn.textContent='Copy All';},1500);}
     catch(e){copyBtn.textContent='Copy failed';setTimeout(()=>{copyBtn.textContent='Copy All';},1500);}
@@ -1955,11 +1968,15 @@ function showSyncDataUsageViewer(){
         <div><strong>Today:</strong> ${fmtBytes(today.down+today.up)} (${fmtBytes(today.down)} down, ${fmtBytes(today.up)} up)${cellLine(today)}</div>
         <div><strong>Last 7 days:</strong> ${fmtBytes(week.down+week.up)} (${fmtBytes(week.down)} down, ${fmtBytes(week.up)} up)${cellLine(week)}</div>
         <div><strong>Last 30 days:</strong> ${fmtBytes(month.down+month.up)} (${fmtBytes(month.down)} down, ${fmtBytes(month.up)} up)${cellLine(month)}</div>
+        <div style="margin-top:8px"><strong>Forecasts</strong> <span style="color:#7a90a8">(counted separately, not in the totals above)</span></div>
+        <div>Today: ${wxLine(today)}</div>
+        <div>Last 7 days: ${wxLine(week)}</div>
+        <div>Last 30 days: ${wxLine(month)}</div>
       </div>`;
     const rowsHtml=days.map(d=>{
       const e=syncDataLog[d];
       const cellTotal=(e.cellDown||0)+(e.cellUp||0);
-      return`<div style="margin-bottom:4px">${d}  —  ${fmtBytes(e.down+e.up)} <span style="color:#7a90a8">(${fmtBytes(e.down)} down, ${fmtBytes(e.up)} up)</span>${cellTotal>0?` <span style="color:#f2a92e">— ${fmtBytes(cellTotal)} cellular</span>`:''}</div>`;
+      return`<div style="margin-bottom:4px">${d}  —  ${fmtBytes(e.down+e.up)} <span style="color:#7a90a8">(${fmtBytes(e.down)} down, ${fmtBytes(e.up)} up)</span>${cellTotal>0?` <span style="color:#f2a92e">— ${fmtBytes(cellTotal)} cellular</span>`:''}${e.wxCount?` <span style="color:#7a90a8">· forecasts ${fmtBytes(e.wxBytes||0)} in ${e.wxCount}</span>`:''}</div>`;
     }).join('');
     body.innerHTML=summaryHtml+rowsHtml;
   }
@@ -6727,7 +6744,9 @@ async function _fetchWindChunk(chunk){
         if(r.status===429){_windBlockedUntil=Date.now()+5*60*1000;log('forecast service said too many requests - pausing 5 min');}
         return; // an error reply is not retried - asking again only makes it worse
       }
-      const j=await r.json();
+      const txt=await r.text();
+      try{recordForecastBytes(byteLen(txt));}catch(e){}
+      const j=JSON.parse(txt);
       const arr=Array.isArray(j)?j:[j];
       let got=0;
       chunk.forEach((c,i)=>{const one=arr[i];if(one&&one.current){_windCache[c]={data:_parseWind(one),fetchedAt:Date.now()};got++;}});
