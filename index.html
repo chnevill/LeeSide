@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v682';
+const APP_VERSION='v683';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6694,6 +6694,7 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
   renderFlights(document.getElementById('searchInput').value);
 }
 let _windCache={}; // site -> {data, fetchedAt}
+let _windRetryTimer=null,_windRetryFn=null; // v683: keep-trying loop for the Sites forecast (see renderSiteNotesCardList)
 const WIND_CACHE_MS=15*60*1000;
 // why the last forecast request failed (shown small on the card)
 let _windLastFail='';
@@ -7778,6 +7779,8 @@ document.addEventListener('visibilitychange',async()=>{
   _siteMapInstance.setView([loc.lat,loc.lon],10);
 });
 let _windHiddenAt=0;
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&_windRetryFn)setTimeout(()=>{if(_windRetryFn)_windRetryFn();},1500);}); // v683: resume the forecast keep-trying loop once the app is back and the connection has settled
+window.addEventListener('online',()=>{if(_windRetryFn)setTimeout(()=>{if(_windRetryFn)_windRetryFn();},1500);});
 document.addEventListener('visibilitychange',()=>{ // v681: back in the app after 30+ minutes - the forecast slider goes back to the current time
   if(document.hidden){_windHiddenAt=Date.now();return;}
   const away=_windHiddenAt?Date.now()-_windHiddenAt:0;
@@ -7966,6 +7969,7 @@ function _scheduleSiteLocRetry(){
   },delay);
 }
 async function renderSiteNotesCardList(force,q=''){
+  clearTimeout(_windRetryTimer);_windRetryFn=null; // a fresh render starts its own forecast loading; stop any older keep-trying loop
   q=q.trim();
   const listEl=document.getElementById('siteNotesCardList');
   if(!listEl)return;
@@ -8065,6 +8069,35 @@ async function renderSiteNotesCardList(force,q=''){
     }
     if(missing().length){log('forecast gave up: '+_windLastFail);try{logAuthEvent('forecast gave up: '+_windLastFail);}catch(e){}}
     uuids.forEach(_fillWindCard);
+    _keepTrying(uuids);
+  };
+  // v683: if the forecast still is not there after the quick retries, keep asking once a minute for as long as the Sites tab is open
+  // and the app is on screen (up to 30 minutes), instead of leaving 'No data' until the user pulls down. Pauses in the background and
+  // resumes when the app comes back to the screen or the connection returns. A 'too many requests' reply is still respected.
+  let _ktCount=0;
+  const _ktSet=new Set(); // every card (nearest batch, and batches added by scrolling) that is still waiting for its forecast
+  const _ktMiss=()=>[..._ktSet].filter(u=>siteCoordsByUuid[u]&&!_windFresh(siteCoordsByUuid[u]));
+  const _ktAttempt=async()=>{
+    clearTimeout(_windRetryTimer);
+    const tabEl=document.getElementById('tab-sites');
+    if(!tabEl||!tabEl.classList.contains('active')){_windRetryFn=null;return;} // left the Sites tab - opening it again loads afresh
+    if(document.hidden)return; // paused; the visibility listener calls this again on return
+    if(++_ktCount>30){_windRetryFn=null;return;}
+    const was=_ktMiss();
+    if(!was.length){_windRetryFn=null;return;}
+    was.forEach(_showWindRetry);
+    await fetchSitesWindBatch(was.map(u=>siteCoordsByUuid[u]),true);
+    was.forEach(_fillWindCard);
+    if(_ktMiss().length){_windRetryTimer=setTimeout(_ktAttempt,60000);}
+    else{_windRetryFn=null;try{logAuthEvent('forecast recovered by keep-trying after '+_ktCount+' more tries');}catch(e){}}
+  };
+  const _keepTrying=uuids=>{
+    uuids.forEach(u=>_ktSet.add(u));
+    if(!_ktMiss().length)return;
+    if(_windRetryFn===_ktAttempt)return; // loop already running for this render
+    _windRetryFn=_ktAttempt;
+    clearTimeout(_windRetryTimer);
+    _windRetryTimer=setTimeout(_ktAttempt,60000);
   };
   const _windQueue=new Set();let _windFlushT=null;
   const _queueWind=uuid=>{
