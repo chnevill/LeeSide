@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v681';
+const APP_VERSION='v682';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6738,13 +6738,19 @@ async function _fetchWindChunk(chunk){
       // both directions of this tradeoff are already known and were weighed
       // deliberately.
       const url=`https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
-      const r=await fetchWithTimeout(url,{},15000);
+      const _t0=Date.now();
+      const _ctx=()=>'['+chunk.length+' sites, '+(document.visibilityState||'?')+', '+((navigator.connection&&navigator.connection.type)||'?')+'/'+((navigator.connection&&navigator.connection.effectiveType)||'?')+', '+Math.round((Date.now()-_t0)/100)/10+'s]';
+      let r;
+      try{r=await fetchWithTimeout(url,{},15000);}
+      catch(e){try{logAuthEvent('forecast request failed: '+((e&&e.message)||'error')+' '+_ctx());}catch(_){}throw e;}
       if(!r.ok){
+        try{logAuthEvent('forecast HTTP '+r.status+' '+_ctx());}catch(_){}
         _windLastFail='HTTP '+r.status+(r.status===429?' (too many requests)':'');
         if(r.status===429){_windBlockedUntil=Date.now()+5*60*1000;log('forecast service said too many requests - pausing 5 min');}
         return; // an error reply is not retried - asking again only makes it worse
       }
       const txt=await r.text();
+      try{logAuthEvent('forecast ok '+Math.round(byteLen(txt)/1024)+' KB '+_ctx());}catch(_){}
       try{recordForecastBytes(byteLen(txt));}catch(e){}
       const j=JSON.parse(txt);
       const arr=Array.isArray(j)?j:[j];
