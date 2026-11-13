@@ -6680,6 +6680,7 @@ let _windCache={}; // site -> {data, fetchedAt}
 const WIND_CACHE_MS=15*60*1000;
 // why the last forecast request failed (shown small on the card)
 let _windLastFail='';
+let _windObserver=null; // watches which site cards are on screen so only those fetch a forecast
 let _windBlockedUntil=0; // v679: after the forecast service says 'too many requests' (HTTP 429) nothing asks again for 5 minutes
 const _windInFlight={}; // coords -> the request already carrying it, so two callers never send the same site twice
 function _windReasonText(){return String(_windLastFail||'').replace(/[<>&"]/g,'').slice(0,60);} // small text under 'No data' on a card, plain text only
@@ -6700,7 +6701,7 @@ function _parseWind(j){
 async function _fetchWindChunk(chunk){
   const lats=chunk.map(c=>parseFloat(c.split(',')[0])).join(',');
   const lons=chunk.map(c=>parseFloat(c.split(',')[1])).join(',');
-  for(let attempt=0;attempt<2;attempt++){
+  for(let attempt=0;attempt<1;attempt++){
     try{
       // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
       // the default can occasionally show gust below sustained speed, a
@@ -6735,7 +6736,6 @@ async function _fetchWindChunk(chunk){
       return;
     }catch(e){
       _windLastFail=(e&&e.message)||'error';
-      if(attempt===0)await new Promise(r=>setTimeout(r,3000)); // one quiet second try for a timeout / dropped connection
     }
   }
 }
@@ -6780,7 +6780,9 @@ function prefetchSitesWeather(){
   if(!shown.length)return; // nothing to warm, and no reason to prompt for location this early if there's nothing to show it for
   getCurrentLocation(false).then(loc=>{
     if(!loc)return; // same as today - Sites will retry this itself when opened
-    fetchSitesWindBatch(shown.map(({uuid})=>siteCoordsByUuid[uuid]),false); // one request for all sites
+    // v679: warm only the 8 nearest sites, in one request - the rest load when scrolled to
+    const near=shown.map(({uuid})=>siteCoordsByUuid[uuid]).filter(Boolean).map(c=>{const[la,lo]=c.split(',').map(parseFloat);return{c,d:haversineKm(loc.lat,loc.lon,la,lo)};}).filter(x=>isFinite(x.d)).sort((x,y)=>x.d-y.d).slice(0,8);
+    fetchSitesWindBatch(near.map(x=>x.c),false);
   });
 }
 function fmtFlightWind(f){
@@ -6987,6 +6989,7 @@ function refreshAllWindBars(){
   document.querySelectorAll('[data-windbarsite]').forEach(el=>{
     const site=el.dataset.windbarsite;
     const data=_windDataCache[site];
+    if(data===undefined)return; // v679: card not loaded yet (not scrolled to) - leave it empty
     renderOneWindBar(el,data);
   });
 }
@@ -7988,25 +7991,13 @@ async function renderSiteNotesCardList(force,q=''){
     </div>`;
   }).join('');
 
-  // v679: one request carries every site's forecast (see fetchSitesWindBatch); each card then reads its own result from the cache.
-  const _allWindCoords=withDist.map(({uuid})=>siteCoordsByUuid[uuid]).filter(Boolean);
+  // v679: forecasts load only for the cards that are on screen. A site you have not scrolled to costs no request, and the cards that appear
+  // together are fetched in ONE request. Cards whose forecast is already cached (under 15 minutes old) paint straight away.
   const _windFresh=c=>_windCache[c]&&Date.now()-_windCache[c].fetchedAt<WIND_CACHE_MS;
-  const _windBatchDone=(async()=>{
-    await fetchSitesWindBatch(_allWindCoords,force);
-    const need=_allWindCoords.filter(c=>!_windFresh(c));
-    const tabEl=document.getElementById('tab-sites');
-    if(need.length&&Date.now()>=_windBlockedUntil&&!document.hidden&&tabEl&&tabEl.classList.contains('active')){
-      log('forecast missing for '+need.length+' site(s): '+_windLastFail+' - one more try');
-      withDist.forEach(({uuid})=>{const c=siteCoordsByUuid[uuid];if(c&&need.includes(c)){const sl=listEl.querySelector(`[data-windslot="${uuid}"]`);if(sl)sl.innerHTML='<span style="color:var(--text2);font-size:14px">Retrying…</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');}});
-      await new Promise(r=>setTimeout(r,4000));
-      await fetchSitesWindBatch(need,true);
-    }
-    if(_allWindCoords.some(c=>!_windFresh(c))){log('forecast gave up: '+_windLastFail);try{logAuthEvent('forecast gave up: '+_windLastFail);}catch(e){}}
-  })();
-  withDist.forEach(({uuid})=>{
+  const _fillWindCard=uuid=>{
     const coords=siteCoordsByUuid[uuid];
-    if(!coords)return;
-    _windBatchDone.then(()=>_windFresh(coords)?_windCache[coords].data:null).then(w=>{
+    const w=(coords&&_windFresh(coords))?_windCache[coords].data:null;
+    {
       const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
       if(slot){
         if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');}
@@ -8017,8 +8008,51 @@ async function renderSiteNotesCardList(force,q=''){
       _windDataCache[uuid]=w;
       const barContainer=listEl.querySelector(`[data-windbarsite="${uuid}"]`);
       if(barContainer)renderOneWindBar(barContainer,w);
-    });
-  });
+    }
+  };
+  const _showWindRetry=uuid=>{const sl=listEl.querySelector(`[data-windslot="${uuid}"]`);if(sl)sl.innerHTML='<span style="color:var(--text2);font-size:14px">Retrying…</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');};
+  const _loadWindFor=async uuids=>{
+    const coordsOf=u=>siteCoordsByUuid[u];
+    await fetchSitesWindBatch(uuids.map(coordsOf),force);
+    const missing=()=>uuids.filter(u=>coordsOf(u)&&!_windFresh(coordsOf(u)));
+    const tabEl=document.getElementById('tab-sites');
+    for(const delay of [2500,6000,12000]){ // same three quiet retries as v670, but each round is ONE request for all the sites still missing; a 'too many requests' reply stops them
+      if(!missing().length||Date.now()<_windBlockedUntil||document.hidden||!tabEl||!tabEl.classList.contains('active'))break;
+      log('forecast missing for '+missing().length+' site(s): '+_windLastFail+' - retrying in '+(delay/1000)+'s');
+      missing().forEach(_showWindRetry);
+      await new Promise(r=>setTimeout(r,delay));
+      await fetchSitesWindBatch(missing().map(coordsOf),true);
+    }
+    if(missing().length){log('forecast gave up: '+_windLastFail);try{logAuthEvent('forecast gave up: '+_windLastFail);}catch(e){}}
+    uuids.forEach(_fillWindCard);
+  };
+  const _windQueue=new Set();let _windFlushT=null;
+  const _queueWind=uuid=>{
+    _windQueue.add(uuid);
+    clearTimeout(_windFlushT);
+    _windFlushT=setTimeout(()=>{const u=[..._windQueue];_windQueue.clear();_loadWindFor(u);},250); // cards that appear together go out as one request
+  };
+  if(_windObserver){_windObserver.disconnect();_windObserver=null;}
+  const _windSlots=withDist.filter(({uuid})=>siteCoordsByUuid[uuid]).map(({uuid})=>uuid);
+  const _needLoad=[];
+  _windSlots.forEach(uuid=>{if(!force&&_windFresh(siteCoordsByUuid[uuid]))_fillWindCard(uuid);else _needLoad.push(uuid);});
+  // the list is sorted nearest-first: the 15 nearest sites load right away (one request); the rest wait until scrolled to
+  const _nearest=new Set(_windSlots.slice(0,15));
+  _needLoad.filter(u=>_nearest.has(u)).forEach(_queueWind);
+  _needLoad.splice(0,_needLoad.length,..._needLoad.filter(u=>!_nearest.has(u)));
+  if('IntersectionObserver' in window){
+    _windObserver=new IntersectionObserver(entries=>{
+      entries.forEach(en=>{
+        if(!en.isIntersecting)return;
+        const uuid=en.target.getAttribute('data-windslot');
+        _windObserver&&_windObserver.unobserve(en.target);
+        _queueWind(uuid);
+      });
+    },{rootMargin:'0px 0px 300px 0px'});
+    _needLoad.forEach(uuid=>{const el=listEl.querySelector(`[data-windslot="${uuid}"]`);if(el)_windObserver.observe(el);});
+  }else{
+    _needLoad.forEach(_queueWind); // very old browser without IntersectionObserver: load them all (still batched)
+  }
 
   // Wire up toggle taps (delegated once per render)
   listEl.querySelectorAll('[data-windtoggle]').forEach(t=>t.onclick=()=>cycleWindGranularity());
