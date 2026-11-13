@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v680';
+const APP_VERSION='v681';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7014,6 +7014,10 @@ function refreshAllWindBars(){
 }
 let _windScrollLeftPx=0;
 let _windScrollIsFresh=true;
+// v681: the slider keeps its position while you are using the app, but after 30 minutes without touching it (or being away from the app that long)
+// it goes back to the current time, the same 30 minutes the Sites map uses.
+const WIND_SLIDER_STALE_MS=30*60*1000;
+let _windScrollTouchedAt=0;
 // Shared across every wind bar (not one state object per bar) - the mousemove/mouseup
 // listeners that use this are attached once, globally, in wire(), rather than re-added
 // on every render alongside the per-element mousedown below. Site cards re-render
@@ -7057,7 +7061,7 @@ function _startWindMomentum(scrollEl,listEl,velocity){
     if(newLeft<0){newLeft=0;_windMomentum.velocity=0;}
     else if(newLeft>maxScroll){newLeft=maxScroll;_windMomentum.velocity=0;}
     scrollEl.scrollLeft=newLeft;
-    _windScrollLeftPx=newLeft;
+    _windScrollLeftPx=newLeft;_windScrollTouchedAt=Date.now();
     listEl.querySelectorAll('[data-windscroll]').forEach(other=>{
       if(other!==scrollEl)other.scrollLeft=newLeft;
     });
@@ -7095,11 +7099,13 @@ function renderOneWindBar(containerEl,windData){
         ${bar.dayLabels.map(d=>`<span style="position:absolute;left:${d.percent.toFixed(2)}%;font-size:11px;font-weight:700;color:var(--text2);white-space:nowrap">${d.text}</span>`).join('')}
       </div>`:''}
     </div>`;
+  if(!_windScrollIsFresh&&_windScrollTouchedAt&&Date.now()-_windScrollTouchedAt>WIND_SLIDER_STALE_MS)_windScrollIsFresh=true; // position is old - go back to now
   if(_windScrollIsFresh&&bar.nowPercent!=null){
     const nowPx=bar.totalWidthPx*(bar.nowPercent/100);
     const visibleWidth=scrollEl.clientWidth||300;
     _windScrollLeftPx=Math.max(0,nowPx-visibleWidth*0.35); // a bit of past context visible, mostly future ahead
     _windScrollIsFresh=false; // only the first card to render computes this; the rest share it via sync
+    _windScrollTouchedAt=Date.now();
   }
   scrollEl.scrollLeft=_windScrollLeftPx;
 }
@@ -7765,6 +7771,15 @@ document.addEventListener('visibilitychange',async()=>{
   _siteMapLastLoc=loc;
   _siteMapInstance.setView([loc.lat,loc.lon],10);
 });
+let _windHiddenAt=0;
+document.addEventListener('visibilitychange',()=>{ // v681: back in the app after 30+ minutes - the forecast slider goes back to the current time
+  if(document.hidden){_windHiddenAt=Date.now();return;}
+  const away=_windHiddenAt?Date.now()-_windHiddenAt:0;
+  _windHiddenAt=0;
+  if(away<WIND_SLIDER_STALE_MS)return;
+  _windScrollIsFresh=true;
+  if(document.querySelector('[data-windbarsite]'))refreshAllWindBars();
+});
 let _siteMapDropPin=null; // the pin dropped by a long press on the Sites map, if any
 function clearSiteMapDropPin(){if(_siteMapDropPin){_siteMapDropPin.remove();_siteMapDropPin=null;}}
 let _siteMapLastView=(()=>{ // {lat,lon,zoom} — remembers where you left the map, persisted per device (never synced), not reset by closing the app
@@ -8109,7 +8124,7 @@ async function renderSiteNotesCardList(force,q=''){
         e.stopPropagation(); // don't let this also read as a tab-swipe on #content
         const newLeft=state.startScrollLeft-dx;
         scrollEl.scrollLeft=newLeft;
-        _windScrollLeftPx=newLeft;
+        _windScrollLeftPx=newLeft;_windScrollTouchedAt=Date.now();
         listEl.querySelectorAll('[data-windscroll]').forEach(other=>{
           if(other!==scrollEl)other.scrollLeft=newLeft;
         });
@@ -8160,7 +8175,7 @@ async function renderSiteNotesCardList(force,q=''){
       e.preventDefault();
       const newLeft=scrollEl.scrollLeft+e.deltaX;
       scrollEl.scrollLeft=newLeft;
-      _windScrollLeftPx=newLeft;
+      _windScrollLeftPx=newLeft;_windScrollTouchedAt=Date.now();
       listEl.querySelectorAll('[data-windscroll]').forEach(other=>{
         if(other!==scrollEl)other.scrollLeft=newLeft;
       });
@@ -12180,7 +12195,7 @@ function wire(){
     const dx=e.clientX-_windDragState.startX;
     const newLeft=_windDragState.startScrollLeft-dx;
     _windDragState.el.scrollLeft=newLeft;
-    _windScrollLeftPx=newLeft;
+    _windScrollLeftPx=newLeft;_windScrollTouchedAt=Date.now();
     document.querySelectorAll('[data-windscroll]').forEach(other=>{
       if(other!==_windDragState.el)other.scrollLeft=newLeft;
     });
