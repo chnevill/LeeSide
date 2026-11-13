@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v678';
+const APP_VERSION='v679';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6678,66 +6678,88 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
 }
 let _windCache={}; // site -> {data, fetchedAt}
 const WIND_CACHE_MS=15*60*1000;
-// v670: why the last wind fetch failed, and a retrying wrapper for the Sites list. A card used to show "No data" after one
-// failed request and only a pull-down tried again. Now a failed site is retried quietly up to three times, a few seconds apart.
+// why the last forecast request failed (shown small on the card)
 let _windLastFail='';
-const WIND_RETRY_MS=[2500,6000,12000]; // a cold start can take a while to get its network going
-async function fetchSiteWindRetry(coords,force,onRetry){
-  let w=await fetchSiteWind(coords,force);
-  for(let i=0;!w&&i<WIND_RETRY_MS.length;i++){
-    log('wind fetch failed for '+coords+': '+_windLastFail+' (try '+(i+1)+')');
-    const tabEl=document.getElementById('tab-sites');
-    if(document.hidden||!tabEl||!tabEl.classList.contains('active'))return null; // not looking at Sites - the next visit fetches fresh
-    if(onRetry)try{onRetry();}catch(e){}
-    await new Promise(r=>setTimeout(r,WIND_RETRY_MS[i]+Math.random()*800));
-    w=await fetchSiteWind(coords,true);
+let _windBlockedUntil=0; // v679: after the forecast service says 'too many requests' (HTTP 429) nothing asks again for 5 minutes
+const _windInFlight={}; // coords -> the request already carrying it, so two callers never send the same site twice
+function _windReasonText(){return String(_windLastFail||'').replace(/[<>&"]/g,'').slice(0,60);} // small text under 'No data' on a card, plain text only
+function _parseWind(j){
+  return{
+    speed:Math.round(j.current.wind_speed_10m),
+    gust:Math.round(j.current.wind_gusts_10m),
+    dir:j.current.wind_direction_10m,
+    weatherCode:j.current.weather_code,
+    utcOffsetSeconds:j.utc_offset_seconds||0,
+    hourly:(j.hourly&&j.hourly.time)?j.hourly.time.map((t,i)=>({time:t,speed:j.hourly.wind_speed_10m[i],dir:j.hourly.wind_direction_10m[i],gust:j.hourly.wind_gusts_10m[i]})):[],
+    daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
+  };
+}
+// v679: ONE request for many sites. Before, every site sent its own request at the same moment (20 sites = 20 requests, plus up to 3 retry rounds each,
+// plus the same again from the start-up prefetch). The forecast service answered 'too many requests' (429) or the requests timed out - 189 failed lines in one log.
+// Open-Meteo accepts comma-separated latitude/longitude lists and replies with an array in the same order (checked against a live reply 11/12).
+async function _fetchWindChunk(chunk){
+  const lats=chunk.map(c=>parseFloat(c.split(',')[0])).join(',');
+  const lons=chunk.map(c=>parseFloat(c.split(',')[1])).join(',');
+  for(let attempt=0;attempt<2;attempt++){
+    try{
+      // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
+      // the default can occasionally show gust below sustained speed, a
+      // physically impossible value - confirmed directly in the raw API
+      // response, roughly 48% of hours in one real test. Explicitly requesting
+      // ECMWF's IFS model instead was tried and verified to never do this
+      // (168 hours checked at two real sites, zero violations, corroborated
+      // independently against Windy's own ECMWF view) - but it turned out to
+      // consistently overstate gust for this region's coastal/laminar terrain
+      // by roughly 2-3x versus Chris's own real logged flight history at these
+      // exact sites, making the forecast bar look uniformly unflyable even on
+      // genuinely good days. Chris's explicit call after comparing both: a
+      // forecast that's usually close to real experience with an occasional
+      // impossible value is more useful than one that's always physically
+      // valid but consistently unusable for its actual first-look purpose. Do
+      // not re-add a models= parameter without Chris raising this again -
+      // both directions of this tradeoff are already known and were weighed
+      // deliberately.
+      const url=`https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
+      const r=await fetchWithTimeout(url,{},15000);
+      if(!r.ok){
+        _windLastFail='HTTP '+r.status+(r.status===429?' (too many requests)':'');
+        if(r.status===429){_windBlockedUntil=Date.now()+5*60*1000;log('forecast service said too many requests - pausing 5 min');}
+        return; // an error reply is not retried - asking again only makes it worse
+      }
+      const j=await r.json();
+      const arr=Array.isArray(j)?j:[j];
+      let got=0;
+      chunk.forEach((c,i)=>{const one=arr[i];if(one&&one.current){_windCache[c]={data:_parseWind(one),fetchedAt:Date.now()};got++;}});
+      if(!got)_windLastFail='reply had no current data';
+      else if(got<chunk.length)log('forecast reply covered '+got+' of '+chunk.length+' sites');
+      return;
+    }catch(e){
+      _windLastFail=(e&&e.message)||'error';
+      if(attempt===0)await new Promise(r=>setTimeout(r,3000)); // one quiet second try for a timeout / dropped connection
+    }
   }
-  if(!w)log('wind fetch gave up for '+coords+': '+_windLastFail);
-  return w;
+}
+async function fetchSitesWindBatch(coordsList,force){
+  const fresh=c=>_windCache[c]&&Date.now()-_windCache[c].fetchedAt<WIND_CACHE_MS;
+  const want=[...new Set(coordsList.filter(Boolean))].filter(c=>{const[la,lo]=c.split(',').map(parseFloat);return isFinite(la)&&isFinite(lo)&&(force||!fresh(c));});
+  if(!want.length)return;
+  if(Date.now()<_windBlockedUntil){_windLastFail='too many requests - waiting a few minutes';return;}
+  const todo=want.filter(c=>!_windInFlight[c]);
+  const waits=want.filter(c=>_windInFlight[c]).map(c=>_windInFlight[c]);
+  for(let k=0;k<todo.length;k+=40){
+    const chunk=todo.slice(k,k+40);
+    const p=_fetchWindChunk(chunk).finally(()=>chunk.forEach(c=>{delete _windInFlight[c];}));
+    chunk.forEach(c=>{_windInFlight[c]=p;});
+    waits.push(p);
+  }
+  await Promise.all(waits);
 }
 async function fetchSiteWind(coords,force){
   if(!coords)return null;
-  const cached=_windCache[coords];
-  if(!force&&cached&&Date.now()-cached.fetchedAt<WIND_CACHE_MS)return cached.data;
-  const[lat,lon]=coords.split(',').map(parseFloat);
-  try{
-    // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
-    // the default can occasionally show gust below sustained speed, a
-    // physically impossible value - confirmed directly in the raw API
-    // response, roughly 48% of hours in one real test. Explicitly requesting
-    // ECMWF's IFS model instead was tried and verified to never do this
-    // (168 hours checked at two real sites, zero violations, corroborated
-    // independently against Windy's own ECMWF view) - but it turned out to
-    // consistently overstate gust for this region's coastal/laminar terrain
-    // by roughly 2-3x versus Chris's own real logged flight history at these
-    // exact sites, making the forecast bar look uniformly unflyable even on
-    // genuinely good days. Chris's explicit call after comparing both: a
-    // forecast that's usually close to real experience with an occasional
-    // impossible value is more useful than one that's always physically
-    // valid but consistently unusable for its actual first-look purpose. Do
-    // not re-add a models= parameter without Chris raising this again -
-    // both directions of this tradeoff are already known and were weighed
-    // deliberately.
-    const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
-    const r=await fetchWithTimeout(url,{},10000);
-    if(!r.ok){_windLastFail='HTTP '+r.status;return null;}
-    const j=await r.json();
-    if(!j.current){_windLastFail='reply had no current data';return null;}
-    const result={
-      speed:Math.round(j.current.wind_speed_10m),
-      gust:Math.round(j.current.wind_gusts_10m),
-      dir:j.current.wind_direction_10m,
-      weatherCode:j.current.weather_code,
-      utcOffsetSeconds:j.utc_offset_seconds||0,
-      hourly:(j.hourly&&j.hourly.time)?j.hourly.time.map((t,i)=>({time:t,speed:j.hourly.wind_speed_10m[i],dir:j.hourly.wind_direction_10m[i],gust:j.hourly.wind_gusts_10m[i]})):[],
-      daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
-    };
-    _windCache[coords]={data:result,fetchedAt:Date.now()};
-    return result;
-  }catch(e){
-    _windLastFail=(e&&e.message)||'error';
-    return null;
-  }
+  const t0=Date.now();
+  await fetchSitesWindBatch([coords],force);
+  const e=_windCache[coords];
+  return (e&&(!force||e.fetchedAt>=t0))?e.data:null;
 }
 // Warms the exact same two caches Sites' own render already reads from
 // (the browser's own geolocation cache via getCurrentLocation, and
@@ -6758,10 +6780,7 @@ function prefetchSitesWeather(){
   if(!shown.length)return; // nothing to warm, and no reason to prompt for location this early if there's nothing to show it for
   getCurrentLocation(false).then(loc=>{
     if(!loc)return; // same as today - Sites will retry this itself when opened
-    shown.forEach(({uuid})=>{
-      const c=siteCoordsByUuid[uuid];
-      if(c)fetchSiteWind(c,false);
-    });
+    fetchSitesWindBatch(shown.map(({uuid})=>siteCoordsByUuid[uuid]),false); // one request for all sites
   });
 }
 function fmtFlightWind(f){
@@ -7920,10 +7939,9 @@ async function renderSiteNotesCardList(force,q=''){
     // fetchSiteWind already returns cached data under 15 minutes old without a
     // real network call, so this only does real work right after a cold load.
     listEl.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3);font-size:14px">Checking current wind…</div>';
-    await Promise.all(sites.filter(s=>!s._deleted&&s.coords).map(async s=>{
-      const w=await fetchSiteWind(s.coords,false);
-      _windDataCache[s.uuid]=w;
-    }));
+    const _fs=sites.filter(s=>!s._deleted&&s.coords);
+    await fetchSitesWindBatch(_fs.map(s=>s.coords),false);
+    _fs.forEach(s=>{const e=_windCache[s.coords];_windDataCache[s.uuid]=(e&&Date.now()-e.fetchedAt<WIND_CACHE_MS)?e.data:null;});
   }
   const shown=getShownSites(q);
   if(!shown.length){
@@ -7970,14 +7988,28 @@ async function renderSiteNotesCardList(force,q=''){
     </div>`;
   }).join('');
 
-  // Fetch wind in parallel, fill in each card as it resolves — don't block the list on this
+  // v679: one request carries every site's forecast (see fetchSitesWindBatch); each card then reads its own result from the cache.
+  const _allWindCoords=withDist.map(({uuid})=>siteCoordsByUuid[uuid]).filter(Boolean);
+  const _windFresh=c=>_windCache[c]&&Date.now()-_windCache[c].fetchedAt<WIND_CACHE_MS;
+  const _windBatchDone=(async()=>{
+    await fetchSitesWindBatch(_allWindCoords,force);
+    const need=_allWindCoords.filter(c=>!_windFresh(c));
+    const tabEl=document.getElementById('tab-sites');
+    if(need.length&&Date.now()>=_windBlockedUntil&&!document.hidden&&tabEl&&tabEl.classList.contains('active')){
+      log('forecast missing for '+need.length+' site(s): '+_windLastFail+' - one more try');
+      withDist.forEach(({uuid})=>{const c=siteCoordsByUuid[uuid];if(c&&need.includes(c)){const sl=listEl.querySelector(`[data-windslot="${uuid}"]`);if(sl)sl.innerHTML='<span style="color:var(--text2);font-size:14px">Retrying…</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');}});
+      await new Promise(r=>setTimeout(r,4000));
+      await fetchSitesWindBatch(need,true);
+    }
+    if(_allWindCoords.some(c=>!_windFresh(c))){log('forecast gave up: '+_windLastFail);try{logAuthEvent('forecast gave up: '+_windLastFail);}catch(e){}}
+  })();
   withDist.forEach(({uuid})=>{
     const coords=siteCoordsByUuid[uuid];
     if(!coords)return;
-    fetchSiteWindRetry(coords,force,()=>{const sl=listEl.querySelector(`[data-windslot="${uuid}"]`);if(sl)sl.innerHTML='<span style="color:var(--text2);font-size:14px">Retrying…</span>';}).then(w=>{
+    _windBatchDone.then(()=>_windFresh(coords)?_windCache[coords].data:null).then(w=>{
       const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
       if(slot){
-        if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span>';}
+        if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');}
         else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>`;}
       }
       const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
