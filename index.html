@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v696';
+const APP_VERSION='v697';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6823,9 +6823,11 @@ async function _probeNetwork(failedUrl){
     const res=await Promise.all([
       one('tiny forecast','https://api.open-meteo.com/v1/forecast?latitude=54.5&longitude=-6&current=temperature_2m'),
       one('google','https://www.gstatic.com/generate_204',{mode:'no-cors'}),
-      failedUrl?one('same address again',failedUrl):Promise.resolve('same address again: n/a')
+      failedUrl?one('same address again',failedUrl):Promise.resolve('same address again: n/a'),
+      // v697: the same tiny request with the browser's cross-site check switched off: it succeeds if the service sends ANY reply, even one the app would normally refuse to read
+      one('tiny forecast, no cross-site check','https://api.open-meteo.com/v1/forecast?latitude=54.6&longitude=-6&current=temperature_2m',{mode:'no-cors'})
     ]);
-    logAuthEvent('check after forecast failure ['+(document.visibilityState||'?')+']: '+res.join(' | '));
+    logAuthEvent('check after forecast failure ['+(document.visibilityState||'?')+(navigator.onLine===false?', browser says offline':'')+']: '+res.join(' | '));
   }catch(e){}
 }
 async function fetchSitesWindBatch(coordsList,force,override){ // override (v695): a pull-down - send fresh requests, never wait behind an earlier one that may be stuck
