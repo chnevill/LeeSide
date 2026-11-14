@@ -6801,7 +6801,7 @@ async function _fetchWindChunk(chunk){
     }
   }
 }
-async function fetchSitesWindBatch(coordsList,force){
+async function fetchSitesWindBatch(coordsList,force,override){ // override (v695): a pull-down - send fresh requests, never wait behind an earlier one that may be stuck
   _windCacheLoad();
   const fresh=c=>_windCache[c]&&Date.now()-_windCache[c].fetchedAt<WIND_CACHE_MS;
   const want=[...new Set(coordsList.filter(Boolean))].filter(c=>{const[la,lo]=c.split(',').map(parseFloat);return isFinite(la)&&isFinite(lo)&&(force||!fresh(c));});
@@ -6809,7 +6809,7 @@ async function fetchSitesWindBatch(coordsList,force){
   if(Date.now()<_windBlockedUntil){_windLastFail=_windBlockedWhy||'too many requests - waiting a few minutes';return;}
   // v692: the 3:53 AM log showed one request that had been started at 12:50 AM, frozen while the app was in the background, and only 'timing out' 3 hours later
   // when the app was opened - and every new request for those sites waited behind it. A request that started more than 35 s ago (longer than the 30 s wait) is dead, so it no longer blocks.
-  const _alive=c=>_windInFlight[c]&&(!_windInFlightAt[c]||Date.now()-_windInFlightAt[c]<35000);
+  const _alive=c=>!override&&_windInFlight[c]&&(!_windInFlightAt[c]||Date.now()-_windInFlightAt[c]<35000);
   const todo=want.filter(c=>!_alive(c));
   const waits=want.filter(_alive).map(c=>_windInFlight[c]);
   // v691: the Sign-in log of 9:18-9:27 PM showed the service answering 'Too many concurrent requests' (HTTP 429) when 15 one-site requests went out at the
@@ -8128,7 +8128,7 @@ async function renderSiteNotesCardList(force,q=''){
   const _showWindRetry=uuid=>{const sl=listEl.querySelector(`[data-windslot="${uuid}"]`);if(sl)sl.innerHTML='<span style="color:var(--text2);font-size:14px">Retrying…</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');};
   const _loadWindFor=async uuids=>{
     const coordsOf=u=>siteCoordsByUuid[u];
-    await fetchSitesWindBatch(uuids.map(coordsOf),force);
+    await fetchSitesWindBatch(uuids.map(coordsOf),force,force);
     // v685: no automatic retry rounds (as before v670). A site that does not answer shows 'No data' and a pull-down asks again.
     const _miss=uuids.filter(u=>coordsOf(u)&&!_windFresh(coordsOf(u)));
     if(_miss.length){log('forecast missing for '+_miss.length+' site(s): '+_windLastFail);try{logAuthEvent('forecast missing for '+_miss.length+' of '+uuids.length+' site(s): '+_windLastFail);}catch(e){}}
