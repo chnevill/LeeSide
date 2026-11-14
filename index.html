@@ -6764,7 +6764,7 @@ async function _fetchWindChunk(chunk){
       const _t0=Date.now();
       const _ctx=()=>'['+chunk.length+' sites, '+(document.visibilityState||'?')+', '+((navigator.connection&&navigator.connection.type)||'?')+'/'+((navigator.connection&&navigator.connection.effectiveType)||'?')+', '+Math.round((Date.now()-_t0)/100)/10+'s]';
       let r;
-      try{r=await fetchWithTimeout(url,{},30000);} // v693: Chrome on the phone took about 20 s for the same address at 4 AM, so 10 s was giving up on replies that were still coming
+      try{r=await _hedgedFetch(url,4000,30000);} // v697: second route after 4 s of silence. (v693:: Chrome on the phone took about 20 s for the same address at 4 AM, so 10 s was giving up on replies that were still coming
       catch(e){try{logAuthEvent('forecast request failed: '+((e&&e.message)||'error')+' '+_ctx());}catch(_){}_probeNetwork(url);throw e;}
       if(!r.ok){
         // v690: the service's own reply says WHICH limit was hit (per minute, hour or day) - read it, log it and show it
@@ -6804,6 +6804,40 @@ async function _fetchWindChunk(chunk){
 // v696: diagnostic only - changes nothing about how forecasts load. Right after a forecast request fails, test three things at once and write the result
 // to the Sign-in log: (1) a tiny forecast request for one place, (2) a Google address, (3) the exact same address that just failed. Each gets 6 seconds.
 // At most one check a minute. Tells us whether the forecast service is reachable from the app at the moment of a failure.
+// v697: after a long time in the background the phone's connection to the forecast service can be dead; the browser keeps waiting on it for a minute or more,
+// while a NEW connection answers in a fraction of a second. If the first request has had no reply after hedgeMs, send the same request again to the same service
+// by a separate route (the address with a trailing dot, which the browser treats as a different connection); whichever replies first is used, the other is cancelled.
+// The whole attempt still gives up after totalMs.
+function _hedgedFetch(url,hedgeMs,totalMs){
+  const alt=url.replace('//api.open-meteo.com/','//api.open-meteo.com./');
+  return new Promise((resolve,reject)=>{
+    const acs=[new AbortController(),null];
+    let done=false,live=0,lastErr=null,hedgeT=null,deadT=null;
+    const t0=Date.now();
+    const stop=()=>{done=true;clearTimeout(hedgeT);clearTimeout(deadT);};
+    const start=i=>{
+      if(i===1){acs[1]=new AbortController();}
+      live++;
+      fetch(i===1?alt:url,{signal:acs[i].signal}).then(r=>{
+        if(done)return;
+        // an error reply from the second route (e.g. 'too many at once') must not beat a first route that is only slow
+        if(i===1&&!r.ok&&live>1){live--;lastErr=new Error('HTTP '+r.status);return;}
+        stop();
+        if(acs[1-i]){try{acs[1-i].abort();}catch(e){}}
+        if(i===1){try{logAuthEvent('forecast answered by the second route after '+(Math.round((Date.now()-t0)/100)/10)+'s (first route had not answered)');}catch(e){}}
+        resolve(r);
+      },e=>{
+        if(done)return;
+        lastErr=e;live--;
+        if(i===0&&!acs[1]){start(1);return;}   // first route failed outright: use the second one now
+        if(live<=0){stop();reject(lastErr);}
+      });
+    };
+    hedgeT=setTimeout(()=>{if(!done&&!acs[1])start(1);},hedgeMs);
+    deadT=setTimeout(()=>{if(done)return;stop();try{acs[0].abort();}catch(e){}try{if(acs[1])acs[1].abort();}catch(e){}reject(new Error('Request timed out'));},totalMs);
+    start(0);
+  });
+}
 let _probeAt=0;
 async function _probeNetwork(failedUrl){
   if(Date.now()-_probeAt<60000)return;
@@ -6825,6 +6859,7 @@ async function _probeNetwork(failedUrl){
       one('google','https://www.gstatic.com/generate_204',{mode:'no-cors'}),
       failedUrl?one('same address again',failedUrl):Promise.resolve('same address again: n/a'),
       // v697: the same tiny request with the browser's cross-site check switched off: it succeeds if the service sends ANY reply, even one the app would normally refuse to read
+      one('tiny forecast, second route','https://api.open-meteo.com./v1/forecast?latitude=54.7&longitude=-6&current=temperature_2m'),
       one('tiny forecast, no cross-site check','https://api.open-meteo.com/v1/forecast?latitude=54.6&longitude=-6&current=temperature_2m',{mode:'no-cors'})
     ]);
     logAuthEvent('check after forecast failure ['+(document.visibilityState||'?')+(navigator.onLine===false?', browser says offline':'')+']: '+res.join(' | '));
