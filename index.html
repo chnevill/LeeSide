@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v693';
+const APP_VERSION='v694';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -8451,6 +8451,19 @@ function showNoteView(nid,siteKey){
     </div>`;
   setTimeout(()=>{_resetViewScroll('noteViewSheet');},30);
   document.getElementById('noteViewEditBtn').onclick=()=>{closeOverlay('noteViewOverlay');openNoteModal(n.id);};
+  // Tapping the note's title or text opens it for editing, same as Edit Note at the
+  // bottom. Taps on links, checklist items, embeds, photos and buttons keep doing
+  // their own thing, and so does selecting text.
+  const _tapEdit=e=>{
+    if(e.target.closest('a,img,iframe,button,video,audio,[data-checktoggle],[data-uncheckall],[data-embed-placeholder]'))return;
+    const sel=window.getSelection&&window.getSelection();
+    if(sel&&String(sel).length)return;
+    closeOverlay('noteViewOverlay');openNoteModal(n.id);
+  };
+  const _tapTitle=document.querySelector('#noteViewContent .detail-site');
+  const _tapBody=document.querySelector('#noteViewContent .note-view-body');
+  if(_tapTitle)_tapTitle.onclick=_tapEdit;
+  if(_tapBody){_tapBody.onclick=_tapEdit;_tapBody.style.minHeight='56px';}
   document.getElementById('noteViewCloseBtn').onclick=()=>{
     closeOverlay('noteViewOverlay');
   };
