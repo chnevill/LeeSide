@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v691';
+const APP_VERSION='v692';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6720,6 +6720,7 @@ const WIND_CACHE_MS=15*60*1000;
 let _windLastFail='';
 let _windObserver=null; // watches which site cards are on screen so only those fetch a forecast
 let _windBlockedUntil=0; // v679: after the forecast service says 'too many requests' (HTTP 429) nothing asks again for 5 minutes
+const _windInFlightAt={}; // v692: when each in-flight request actually started (a request older than 15 s is treated as dead and no longer blocks a new one)
 const _windInFlight={}; // coords -> the request already carrying it, so two callers never send the same site twice
 function _windReasonText(){return String(_windLastFail||'').replace(/[<>&"]/g,'').slice(0,60);} // small text under 'No data' on a card, plain text only
 function _parseWind(j){
@@ -6803,8 +6804,11 @@ async function fetchSitesWindBatch(coordsList,force){
   const want=[...new Set(coordsList.filter(Boolean))].filter(c=>{const[la,lo]=c.split(',').map(parseFloat);return isFinite(la)&&isFinite(lo)&&(force||!fresh(c));});
   if(!want.length)return;
   if(Date.now()<_windBlockedUntil){_windLastFail=_windBlockedWhy||'too many requests - waiting a few minutes';return;}
-  const todo=want.filter(c=>!_windInFlight[c]);
-  const waits=want.filter(c=>_windInFlight[c]).map(c=>_windInFlight[c]);
+  // v692: the 3:53 AM log showed one request that had been started at 12:50 AM, frozen while the app was in the background, and only 'timing out' 3 hours later
+  // when the app was opened - and every new request for those sites waited behind it. A request that started more than 15 s ago is dead, so it no longer blocks.
+  const _alive=c=>_windInFlight[c]&&(!_windInFlightAt[c]||Date.now()-_windInFlightAt[c]<15000);
+  const todo=want.filter(c=>!_alive(c));
+  const waits=want.filter(_alive).map(c=>_windInFlight[c]);
   // v691: the Sign-in log of 9:18-9:27 PM showed the service answering 'Too many concurrent requests' (HTTP 429) when 15 one-site requests went out at the
   // same moment, and answering the rest one after another. So: 5 sites per request (3 requests for 15 sites) and never more than 3 at a time. If the service
   // still says 'too many at once', that request is repeated once after 3 seconds.
@@ -6814,9 +6818,10 @@ async function fetchSitesWindBatch(coordsList,force){
     const chunk=todo.slice(k,k+CHUNK);
     let go;const gate=new Promise(r=>{go=r;});
     const p=gate.then(async()=>{
+      chunk.forEach(c=>{_windInFlightAt[c]=Date.now();});
       let res=await _fetchWindChunk(chunk);
       if(res==='busy'){await new Promise(r=>setTimeout(r,3000));res=await _fetchWindChunk(chunk);if(res==='busy')_windLastFail='forecast service busy';}
-    }).finally(()=>chunk.forEach(c=>{delete _windInFlight[c];}));
+    }).finally(()=>chunk.forEach(c=>{if(_windInFlight[c]===p){delete _windInFlight[c];delete _windInFlightAt[c];}}));
     chunk.forEach(c=>{_windInFlight[c]=p;});
     waits.push(p);
     jobs.push({go,p});
@@ -7825,6 +7830,22 @@ document.addEventListener('visibilitychange',async()=>{
   _siteMapInstance.setView([loc.lat,loc.lon],10);
 });
 let _windHiddenAt=0;
+// v692: coming back to the app on the Sites tab: if the data is older than 15 minutes, or any card is still showing 'No data', reload it right away
+// (location and forecasts) instead of leaving whatever state the app was in when the phone froze it. Skipped while there is text in the search box.
+let _sitesAwayAt=0;
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){_sitesAwayAt=Date.now();return;}
+  const away=_sitesAwayAt?Date.now()-_sitesAwayAt:0;
+  _sitesAwayAt=0;
+  if(currentTab!=='sites')return;
+  setTimeout(()=>{
+    if(document.hidden||currentTab!=='sites')return;
+    const box=document.getElementById('siteSearchInput');
+    if(box&&box.value.trim())return;
+    const anyMissing=[...document.querySelectorAll('[data-windslot]')].some(e=>/No data/.test(e.textContent))||/Location unavailable/.test((document.getElementById('siteNotesCardList')||{}).textContent||'');
+    if(away>=WIND_CACHE_MS||anyMissing){try{logAuthEvent('back in the app after '+Math.round(away/60000)+' min - refreshing Sites');}catch(e){}renderSiteNotesCardList(false,'');}
+  },1500);
+});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&_windRetryFn)setTimeout(()=>{if(_windRetryFn)_windRetryFn();},1500);}); // v683: resume the forecast keep-trying loop once the app is back and the connection has settled
 window.addEventListener('online',()=>{if(_windRetryFn)setTimeout(()=>{if(_windRetryFn)_windRetryFn();},1500);});
 document.addEventListener('visibilitychange',()=>{ // v681: back in the app after 30+ minutes - the forecast slider goes back to the current time
