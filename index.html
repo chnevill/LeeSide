@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v685';
+const APP_VERSION='v686';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -8040,7 +8040,7 @@ async function renderSiteNotesCardList(force,q=''){
     {
       const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
       if(slot){
-        if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');}
+        if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span><br><span style="color:var(--text3);font-size:11px">Pull down to refresh</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');}
         else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>`;}
       }
       const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
