@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v702';
+const APP_VERSION='v703';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6707,7 +6707,23 @@ function _fcLog(ok,msg,secs){
     }else if(now-_fcLastLogAt>20000){
       _fcLastLogAt=now;
       logAuthEvent('forecast (old way) failed: '+msg+' ['+secs+'s, '+(document.visibilityState||'?')+', '+(gapMin<0?'no earlier success':gapMin+' min since last success')+']');
+      _fcProbeHosts();
     }
+  }catch(e){}
+}
+// v703 diagnostic only: right after a forecast failure, test other sites to see whether ANY site is unreachable or only the forecast service.
+let _fcProbeAt=0;
+async function _fcProbeHosts(){
+  try{
+    const now=Date.now();if(now-_fcProbeAt<60000)return;_fcProbeAt=now;
+    const one=async(name,url,opt)=>{const t0=Date.now();try{await fetchWithTimeout(url+(url.includes('?')?'&':'?')+'_='+t0,opt||{},8000);return name+' ok '+((Date.now()-t0)/1000).toFixed(1)+'s';}catch(e){return name+' FAILED '+((Date.now()-t0)/1000).toFixed(1)+'s';}};
+    const res=await Promise.all([
+      one('tiny forecast','https://api.open-meteo.com/v1/forecast?latitude=37.8&longitude=-122.3&current=wind_speed_10m'),
+      one('google','https://www.gstatic.com/generate_204',{mode:'no-cors'}),
+      one('cloudflare','https://www.cloudflare.com/cdn-cgi/trace',{mode:'no-cors'}),
+      one('github','https://api.github.com/zen',{mode:'no-cors'})
+    ]);
+    logAuthEvent('check after forecast failure: '+res.join(' | '));
   }catch(e){}
 }
 async function fetchSiteWind(coords,force){
