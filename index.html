@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v694';
+const APP_VERSION='v695';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -3237,6 +3237,7 @@ async function fetchUserInfo(token=accessToken){
   }catch(e){console.warn('fetchUserInfo',e);return null;}
 }
 
+function _withDeadline(promise,ms,msg){let t;return Promise.race([promise,new Promise((_,rej)=>{t=setTimeout(()=>rej(new Error(msg||'timed out')),ms);})]).finally(()=>clearTimeout(t));}
 function fetchWithTimeout(url,opts={},timeoutMs=20000){
   return Promise.race([
     fetch(url,opts),
@@ -6768,7 +6769,7 @@ async function _fetchWindChunk(chunk){
       if(!r.ok){
         // v690: the service's own reply says WHICH limit was hit (per minute, hour or day) - read it, log it and show it
         let _why='';
-        try{const bj=JSON.parse(await r.text());_why=String((bj&&bj.reason)||'');}catch(_){}
+        try{const bj=JSON.parse(await _withDeadline(r.text(),10000,'error reply stopped part-way'));_why=String((bj&&bj.reason)||'');}catch(_){}
         try{logAuthEvent('forecast HTTP '+r.status+(_why?': '+_why.slice(0,200):'')+' '+_ctx());}catch(_){}
         if(r.status===429&&/concurrent/i.test(_why)){
           // v691: 'too many concurrent requests' = too many sent at the same moment, not a usage limit. Say so, and let the caller retry in a few seconds.
@@ -6782,7 +6783,9 @@ async function _fetchWindChunk(chunk){
         }else _windLastFail='HTTP '+r.status;
         return; // an error reply is not retried - asking again only makes it worse
       }
-      const txt=await r.text();
+      let txt;
+      try{txt=await _withDeadline(r.text(),30000,'reply stopped part-way');} // v695: the reply started but never finished - without this limit the cards stayed at '…' for ever and a pull-down waited behind it
+      catch(e){try{logAuthEvent('forecast request failed: '+((e&&e.message)||'error')+' '+_ctx());}catch(_){}throw e;}
       try{logAuthEvent('forecast ok '+Math.round(byteLen(txt)/1024)+' KB '+_ctx());}catch(_){}
       try{recordForecastBytes(byteLen(txt));}catch(e){}
       const j=JSON.parse(txt);
