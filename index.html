@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v692';
+const APP_VERSION='v693';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6763,7 +6763,7 @@ async function _fetchWindChunk(chunk){
       const _t0=Date.now();
       const _ctx=()=>'['+chunk.length+' sites, '+(document.visibilityState||'?')+', '+((navigator.connection&&navigator.connection.type)||'?')+'/'+((navigator.connection&&navigator.connection.effectiveType)||'?')+', '+Math.round((Date.now()-_t0)/100)/10+'s]';
       let r;
-      try{r=await fetchWithTimeout(url,{},10000);}
+      try{r=await fetchWithTimeout(url,{},30000);} // v693: Chrome on the phone took about 20 s for the same address at 4 AM, so 10 s was giving up on replies that were still coming
       catch(e){try{logAuthEvent('forecast request failed: '+((e&&e.message)||'error')+' '+_ctx());}catch(_){}throw e;}
       if(!r.ok){
         // v690: the service's own reply says WHICH limit was hit (per minute, hour or day) - read it, log it and show it
@@ -6805,8 +6805,8 @@ async function fetchSitesWindBatch(coordsList,force){
   if(!want.length)return;
   if(Date.now()<_windBlockedUntil){_windLastFail=_windBlockedWhy||'too many requests - waiting a few minutes';return;}
   // v692: the 3:53 AM log showed one request that had been started at 12:50 AM, frozen while the app was in the background, and only 'timing out' 3 hours later
-  // when the app was opened - and every new request for those sites waited behind it. A request that started more than 15 s ago is dead, so it no longer blocks.
-  const _alive=c=>_windInFlight[c]&&(!_windInFlightAt[c]||Date.now()-_windInFlightAt[c]<15000);
+  // when the app was opened - and every new request for those sites waited behind it. A request that started more than 35 s ago (longer than the 30 s wait) is dead, so it no longer blocks.
+  const _alive=c=>_windInFlight[c]&&(!_windInFlightAt[c]||Date.now()-_windInFlightAt[c]<35000);
   const todo=want.filter(c=>!_alive(c));
   const waits=want.filter(_alive).map(c=>_windInFlight[c]);
   // v691: the Sign-in log of 9:18-9:27 PM showed the service answering 'Too many concurrent requests' (HTTP 429) when 15 one-site requests went out at the
