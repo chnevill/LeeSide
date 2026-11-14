@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v689';
+const APP_VERSION='v690';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6694,6 +6694,26 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
   renderFlights(document.getElementById('searchInput').value);
 }
 let _windCache={}; // site -> {data, fetchedAt}
+let _windBlockedWhy='';
+// v690: keep the forecast cache between app opens (browser storage, never synced). Reopening the app within 15 minutes of a load no longer asks the
+// forecast service again for sites it just fetched; anything older than 15 minutes, or fetched in a different wind unit, is ignored.
+const WIND_CACHE_KEY='leeside_windcache_v1';
+let _windCacheLoaded=false,_windSaveTimer=null;
+function _windCacheLoad(){
+  if(_windCacheLoaded)return;_windCacheLoaded=true;
+  try{
+    const o=JSON.parse(localStorage.getItem(WIND_CACHE_KEY)||'null');
+    if(!o||o.unit!==windUnitParam()||!o.entries)return;
+    for(const c in o.entries){const e=o.entries[c];if(e&&e.data&&e.data.hourly&&Date.now()-e.fetchedAt<WIND_CACHE_MS&&!_windCache[c])_windCache[c]=e;}
+  }catch(e){}
+}
+function _windCacheSave(){
+  clearTimeout(_windSaveTimer);
+  _windSaveTimer=setTimeout(()=>{try{
+    const entries={};for(const c in _windCache)if(Date.now()-_windCache[c].fetchedAt<WIND_CACHE_MS)entries[c]=_windCache[c];
+    localStorage.setItem(WIND_CACHE_KEY,JSON.stringify({unit:windUnitParam(),entries}));
+  }catch(e){}},1000);
+}
 let _windRetryTimer=null,_windRetryFn=null; // v683: keep-trying loop for the Sites forecast (see renderSiteNotesCardList)
 const WIND_CACHE_MS=15*60*1000;
 // why the last forecast request failed (shown small on the card)
@@ -6745,9 +6765,15 @@ async function _fetchWindChunk(chunk){
       try{r=await fetchWithTimeout(url,{},10000);}
       catch(e){try{logAuthEvent('forecast request failed: '+((e&&e.message)||'error')+' '+_ctx());}catch(_){}throw e;}
       if(!r.ok){
-        try{logAuthEvent('forecast HTTP '+r.status+' '+_ctx());}catch(_){}
-        _windLastFail='HTTP '+r.status+(r.status===429?' (too many requests)':'');
-        if(r.status===429){_windBlockedUntil=Date.now()+5*60*1000;log('forecast service said too many requests - pausing 5 min');}
+        // v690: the service's own reply says WHICH limit was hit (per minute, hour or day) - read it, log it and show it
+        let _why='';
+        try{const bj=JSON.parse(await r.text());_why=String((bj&&bj.reason)||'');}catch(_){}
+        try{logAuthEvent('forecast HTTP '+r.status+(_why?': '+_why.slice(0,200):'')+' '+_ctx());}catch(_){}
+        if(r.status===429){
+          const short=/minut/i.test(_why)?'per-minute limit':/hour/i.test(_why)?'hourly limit':/day|daily/i.test(_why)?'daily limit':(/concurrent/i.test(_why)?'too many at once':'rate limit');
+          _windLastFail='too many requests ('+short+') - waiting a few minutes';
+          _windBlockedUntil=Date.now()+5*60*1000;_windBlockedWhy=_windLastFail;log('forecast service said too many requests ('+short+') - pausing 5 min');
+        }else _windLastFail='HTTP '+r.status;
         return; // an error reply is not retried - asking again only makes it worse
       }
       const txt=await r.text();
@@ -6757,6 +6783,7 @@ async function _fetchWindChunk(chunk){
       const arr=Array.isArray(j)?j:[j];
       let got=0;
       chunk.forEach((c,i)=>{const one=arr[i];if(one&&one.current){_windCache[c]={data:_parseWind(one),fetchedAt:Date.now()};got++;}});
+      if(got)_windCacheSave();
       if(!got)_windLastFail='reply had no current data';
       else if(got<chunk.length)log('forecast reply covered '+got+' of '+chunk.length+' sites');
       return;
@@ -6766,10 +6793,11 @@ async function _fetchWindChunk(chunk){
   }
 }
 async function fetchSitesWindBatch(coordsList,force){
+  _windCacheLoad();
   const fresh=c=>_windCache[c]&&Date.now()-_windCache[c].fetchedAt<WIND_CACHE_MS;
   const want=[...new Set(coordsList.filter(Boolean))].filter(c=>{const[la,lo]=c.split(',').map(parseFloat);return isFinite(la)&&isFinite(lo)&&(force||!fresh(c));});
   if(!want.length)return;
-  if(Date.now()<_windBlockedUntil){_windLastFail='too many requests - waiting a few minutes';return;}
+  if(Date.now()<_windBlockedUntil){_windLastFail=_windBlockedWhy||'too many requests - waiting a few minutes';return;}
   const todo=want.filter(c=>!_windInFlight[c]);
   const waits=want.filter(c=>_windInFlight[c]).map(c=>_windInFlight[c]);
   for(let k=0;k<todo.length;k+=1){ // v685: one small request per site again (not one big request for many) - one failed request now costs one card, not all of them
@@ -7969,6 +7997,7 @@ function _scheduleSiteLocRetry(){
   },delay);
 }
 async function renderSiteNotesCardList(force,q=''){
+  _windCacheLoad();
   clearTimeout(_windRetryTimer);_windRetryFn=null; // a fresh render starts its own forecast loading; stop any older keep-trying loop
   q=q.trim();
   const listEl=document.getElementById('siteNotesCardList');
@@ -11864,7 +11893,7 @@ function wire(){
       // OLD unit even though nothing here marks them as such. Clear the fetch
       // cache so the next time sites are shown, it fetches fresh data in the
       // new unit instead of just relabeling stale numbers.
-      _windCache={};
+      _windCache={};try{localStorage.removeItem(WIND_CACHE_KEY);}catch(e){}
     }
     saveSettings();
   });
