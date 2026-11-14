@@ -1146,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v701';
+const APP_VERSION='v702';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6738,7 +6738,9 @@ async function fetchSiteWind(coords,force){
     let r;
     try{r=await fetchWithTimeout(url,{},10000);}catch(e){_fcLog(false,(e&&e.message)||'error',_secs());throw e;}
     if(!r.ok){_fcLog(false,'HTTP '+r.status,_secs());return null;}
-    const j=await r.json();
+    const _txt=await r.text();
+    try{recordForecastBytes(byteLen(_txt));}catch(e){} // v680 counter, hooked into the old-way request
+    const j=JSON.parse(_txt);
     if(!j.current){_fcLog(false,'reply had no current data',_secs());return null;}
     _fcLog(true,'',_secs());
     const result={
