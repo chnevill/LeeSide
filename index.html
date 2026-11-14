@@ -856,10 +856,7 @@ body.theme-light .star-input button,body.theme-terra .star-input button{color:rg
 
 <!-- EDIT SITE NOTES EXPAND OVERLAY -->
 <div id="editSiteNotesOverlay" style="display:none;position:fixed;inset:0;z-index:200;background:var(--bg2);flex-direction:column;overflow-y:auto">
-  <div style="padding:16px 22px 8px;flex-shrink:0">
-    <div class="fg" style="margin-bottom:0"><label>Note heading</label><input type="text" id="esTitle" placeholder="Defaults to site name"></div>
-  </div>
-  <div style="padding:8px 22px 0;flex-shrink:0;display:flex;align-items:center;justify-content:space-between">
+  <div style="padding:16px 22px 0;flex-shrink:0;display:flex;align-items:center;justify-content:space-between">
     <div style="font-size:var(--fs-lbl);font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">NOTES</div>
     <button id="esNotesDoneBtn" style="background:var(--gold);border:none;border-radius:50px;color:#040a10;font-family:'Syne',sans-serif;font-weight:700;font-size:14px;padding:8px 20px;cursor:pointer">Done</button>
   </div>
@@ -1149,7 +1146,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v687';
+const APP_VERSION='v689';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -1229,6 +1226,8 @@ function logAuthEvent(event){
 // otherwise had no reliable place to log to since they aren't sync events.
 function plog(...args){logAuthEvent(args.map(a=>typeof a==='object'?JSON.stringify(a):a).join(' '));}
 
+let _signInFailNote=''; // v678: specific reason from Google's own 'window failed/closed' message, shown on the failed-sign-in banner
+let _expiryRetryBusy=false; // v674: guards the single extra quiet renewal try before the sign-in wall
 let _tokenRefreshPromise=null; // single-flight — every concurrent caller shares this same promise
                                  // instead of each kicking off its own separate token request,
                                  // which was the actual cause of the repeated 3-4x pile-ups seen
@@ -1269,10 +1268,10 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
       return;
     }
     try{
-      let settled=false;
+      let settled=false,timedOut=false;
       const giveUp=()=>{
         if(settled)return;
-        settled=true;
+        settled=true;timedOut=true;
         _authPopupInFlight=false;
         logAuthEvent('token refresh timed out with no response'+(interactive?' — interactive flow took too long (90s)':' — likely abandoned mid-flight (app backgrounded)')+(showFailureScreen?'':' — background attempt, failing quietly'));
         // A timeout is silence, not a rejection - it doesn't mean Google said no, it means
@@ -1290,8 +1289,24 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
       // // an interactive flow means a real person reading and tapping through Google's own screens (the unverified-app warning, then consent) — 9s was only ever enough for a fast, silent attempt with no human in the loop
       const client=google.accounts.oauth2.initTokenClient({
         client_id:CLIENT_ID,scope:SCOPES,
+        // v678: Google reports 'window failed to open' / 'window closed' here; before this nothing listened and the app waited out the full timer
+        error_callback:err=>{
+          const type=(err&&err.type)||'unknown';
+          logAuthEvent('Google sign-in window: '+type+(err&&err.message?' — '+err.message:''));
+          if(settled)return;
+          settled=true;_authPopupInFlight=false;clearTimeout(timeoutId);
+          if(type==='popup_failed_to_open')_signInFailNote="Google's sign-in window was blocked from opening — tap to try again";
+          else if(type==='popup_closed')_signInFailNote='The Google sign-in window was closed before it finished — tap to try again';
+          if(showFailureScreen)accessToken=null;
+          localSave();if(showFailureScreen)showSignInScreen();resolve(false);
+        },
         callback:async resp=>{
-          if(settled)return; // the timeout already gave up on this attempt — ignore a late response
+          let late=false;
+          if(settled){
+            // v678: a good reply that arrives after our timer is accepted (once), only if we have no valid token now; it goes through the same checks below
+            if(timedOut&&resp&&!resp.error&&!(accessToken&&_tokenExpiry>Date.now()+60000)){late=true;timedOut=false;logAuthEvent('sign-in reply arrived after the timer — checking it instead of discarding it');}
+            else{logAuthEvent('late or duplicate sign-in reply ignored'+(resp&&resp.error?' ('+resp.error+')':''));return;}
+          }
           settled=true;
           _authPopupInFlight=false;
           clearTimeout(timeoutId);
@@ -1314,12 +1329,12 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
               _needDriveConsent=true;
               logAuthEvent('sign-in finished but Google Drive access was NOT allowed (permissions given: '+resp.scope.replace(/https:\/\/www\.googleapis\.com\/auth\//g,'')+')');
               localSave();
-              if(interactive)await showAlert('Google signed you in but did not give LeeSide permission to use your Google Drive, so nothing can sync. Tap the reconnect banner again and, on Google\'s screen, tick the box for Google Drive.');
+              if(interactive&&!late)await showAlert('Google signed you in but did not give LeeSide permission to use your Google Drive, so nothing can sync. Tap the reconnect banner again and, on Google\'s screen, tick the box for Google Drive.');
               resolve(false);
               return;
             }
             let identityResult=null;
-            if(interactive||!userInfo?.email)identityResult=await fetchUserInfo(newToken); // interactive attempts always verify, since Google's account picker is the only realistic way this device ends up authenticated as someone different. Silent background refreshes skip this extra check (only when nothing's cached yet) since they're hinted to the same account and can't switch on their own
+            if(interactive||late||!userInfo?.email)identityResult=await fetchUserInfo(newToken); // interactive attempts always verify, since Google's account picker is the only realistic way this device ends up authenticated as someone different. Silent background refreshes skip this extra check (only when nothing's cached yet) since they're hinted to the same account and can't switch on their own
             if(identityResult&&identityResult.blocked){
               // A different Google account than whatever's already set up on this
               // device tried to sign in - refuse it outright. accessToken was never
@@ -1340,10 +1355,11 @@ function _doTokenRefresh(showFailureScreen=true,interactive=false){
             accessToken=newToken;
             _needDriveConsent=false;
             _tokenExpiry=Date.now()+3600*1000;
-            logAuthEvent('token refresh succeeded');
+            logAuthEvent(late?'token refresh succeeded (late reply accepted)':'token refresh succeeded');
             scheduleTokenRefresh();
             localSave();
             if(!document.getElementById('signinScreen').classList.contains('hidden'))showApp();
+            if(late){syncFromDrive(0,false,false,'late sign-in accepted');}
             resolve(true);
           }else{
             logAuthEvent('token refresh failed ('+resp.error+'), signing out'+(showFailureScreen?'':' — background attempt, failing quietly'));
@@ -1441,7 +1457,28 @@ function scheduleTokenRefresh(){
     // surfaced at all, and even then through the same safe, gated path used
     // everywhere else tonight - never interrupts an open screen, never shown
     // while still offline.
-    if(Date.now()>=_tokenExpiry)showSignInScreen();
+    if(Date.now()>=_tokenExpiry){
+      // v674: an iPhone that has slept for hours often wakes this timer before its quiet
+      // renewal can get an answer from Google (the page is still being throttled), so the
+      // 9s wait ran out and the full-screen sign-in wall appeared for ~20s until the next
+      // attempt succeeded on its own (seen in the log on 9/26, 10/3, 10/27 x2, 11/7).
+      // Give it exactly ONE more quiet try, only while the app is on screen and online,
+      // before showing the wall. A failed retry falls straight through to the old behaviour.
+      if(!_expiryRetryBusy&&!document.hidden&&navigator.onLine){
+        _expiryRetryBusy=true;
+        try{
+          logAuthEvent('quiet renewal got no answer after wake-up; trying once more before showing the sign-in screen');
+          await new Promise(r=>setTimeout(r,2500));
+          if(!userInfo)return; // signed out while we waited
+          if(accessToken&&_tokenExpiry>Date.now())return; // something else already renewed it
+          if(!document.hidden&&navigator.onLine){
+            const ok2=await refreshToken(false,false);
+            if(ok2)return;
+          }
+        }finally{_expiryRetryBusy=false;}
+      }
+      showSignInScreen();
+    }
     else _tokenRefreshTimer=setTimeout(scheduleTokenRefresh,60000);
   },refreshIn);
 }
@@ -1871,6 +1908,17 @@ function showBrokenPhotosViewer(){
   panel.append(header,body);
   document.body.appendChild(panel);
 }
+// v680: forecasts (Open-Meteo) are counted on their own line - they are NOT added to the sync down/up totals, so those numbers mean exactly what they did before.
+// Size = the reply body as the app reads it (the phone's real cellular use is a little lower because replies are compressed in transit).
+function recordForecastBytes(bytes){
+  const day=localDateStr(new Date());
+  if(!syncDataLog[day])syncDataLog[day]={down:0,up:0,cellDown:0,cellUp:0};
+  const e=syncDataLog[day];
+  e.wxBytes=(e.wxBytes||0)+(bytes||0);
+  e.wxCount=(e.wxCount||0)+1;
+  if(!isOnWifi())e.wxCell=(e.wxCell||0)+(bytes||0);
+  localSave();
+}
 function showSyncDataUsageViewer(){
   const existing=document.getElementById('_syncDataPanel');
   if(existing){existing.remove();return;}
@@ -1878,11 +1926,12 @@ function showSyncDataUsageViewer(){
   const totalFor=n=>{
     const cutoff=new Date();cutoff.setDate(cutoff.getDate()-(n-1));
     const cutoffStr=localDateStr(cutoff);
-    let down=0,up=0,cellDown=0,cellUp=0;
-    days.forEach(d=>{if(d>=cutoffStr){down+=syncDataLog[d].down;up+=syncDataLog[d].up;cellDown+=syncDataLog[d].cellDown||0;cellUp+=syncDataLog[d].cellUp||0;}});
-    return{down,up,cellDown,cellUp};
+    let down=0,up=0,cellDown=0,cellUp=0,wx=0,wxN=0,wxCell=0;
+    days.forEach(d=>{if(d>=cutoffStr){down+=syncDataLog[d].down;up+=syncDataLog[d].up;cellDown+=syncDataLog[d].cellDown||0;cellUp+=syncDataLog[d].cellUp||0;wx+=syncDataLog[d].wxBytes||0;wxN+=syncDataLog[d].wxCount||0;wxCell+=syncDataLog[d].wxCell||0;}});
+    return{down,up,cellDown,cellUp,wx,wxN,wxCell};
   };
   const today=totalFor(1),week=totalFor(7),month=totalFor(30);
+  const wxLine=t=>`${fmtBytes(t.wx)} in ${t.wxN} request${t.wxN===1?'':'s'}${t.wxCell>0?` (${fmtBytes(t.wxCell)} cellular)`:''}`;
   const cellLine=t=>t.cellDown+t.cellUp>0?` — <strong style="color:#f2a92e">${fmtBytes(t.cellDown+t.cellUp)} cellular</strong>`:' — 0 B cellular';
   const panel=document.createElement('div');
   panel.id='_syncDataPanel';
@@ -1899,6 +1948,7 @@ function showSyncDataUsageViewer(){
     const lines=[`Today: ${fmtBytes(today.down+today.up)} (${fmtBytes(today.down)} down, ${fmtBytes(today.up)} up) — ${fmtBytes(today.cellDown+today.cellUp)} cellular`,
       `Last 7 days: ${fmtBytes(week.down+week.up)} (${fmtBytes(week.down)} down, ${fmtBytes(week.up)} up) — ${fmtBytes(week.cellDown+week.cellUp)} cellular`,
       `Last 30 days: ${fmtBytes(month.down+month.up)} (${fmtBytes(month.down)} down, ${fmtBytes(month.up)} up) — ${fmtBytes(month.cellDown+month.cellUp)} cellular`,'',
+      `Forecasts (separate from the above) — today: ${wxLine(today)}; 7 days: ${wxLine(week)}; 30 days: ${wxLine(month)}`,'',
       ...days.map(d=>`${d}  —  ${fmtBytes(syncDataLog[d].down+syncDataLog[d].up)} (${fmtBytes(syncDataLog[d].down)} down, ${fmtBytes(syncDataLog[d].up)} up) — ${fmtBytes((syncDataLog[d].cellDown||0)+(syncDataLog[d].cellUp||0))} cellular`)];
     try{await navigator.clipboard.writeText(lines.join('\n'));copyBtn.textContent='Copied!';setTimeout(()=>{copyBtn.textContent='Copy All';},1500);}
     catch(e){copyBtn.textContent='Copy failed';setTimeout(()=>{copyBtn.textContent='Copy All';},1500);}
@@ -1918,11 +1968,15 @@ function showSyncDataUsageViewer(){
         <div><strong>Today:</strong> ${fmtBytes(today.down+today.up)} (${fmtBytes(today.down)} down, ${fmtBytes(today.up)} up)${cellLine(today)}</div>
         <div><strong>Last 7 days:</strong> ${fmtBytes(week.down+week.up)} (${fmtBytes(week.down)} down, ${fmtBytes(week.up)} up)${cellLine(week)}</div>
         <div><strong>Last 30 days:</strong> ${fmtBytes(month.down+month.up)} (${fmtBytes(month.down)} down, ${fmtBytes(month.up)} up)${cellLine(month)}</div>
+        <div style="margin-top:8px"><strong>Forecasts</strong> <span style="color:#7a90a8">(counted separately, not in the totals above)</span></div>
+        <div>Today: ${wxLine(today)}</div>
+        <div>Last 7 days: ${wxLine(week)}</div>
+        <div>Last 30 days: ${wxLine(month)}</div>
       </div>`;
     const rowsHtml=days.map(d=>{
       const e=syncDataLog[d];
       const cellTotal=(e.cellDown||0)+(e.cellUp||0);
-      return`<div style="margin-bottom:4px">${d}  —  ${fmtBytes(e.down+e.up)} <span style="color:#7a90a8">(${fmtBytes(e.down)} down, ${fmtBytes(e.up)} up)</span>${cellTotal>0?` <span style="color:#f2a92e">— ${fmtBytes(cellTotal)} cellular</span>`:''}</div>`;
+      return`<div style="margin-bottom:4px">${d}  —  ${fmtBytes(e.down+e.up)} <span style="color:#7a90a8">(${fmtBytes(e.down)} down, ${fmtBytes(e.up)} up)</span>${cellTotal>0?` <span style="color:#f2a92e">— ${fmtBytes(cellTotal)} cellular</span>`:''}${e.wxCount?` <span style="color:#7a90a8">· forecasts ${fmtBytes(e.wxBytes||0)} in ${e.wxCount}</span>`:''}</div>`;
     }).join('');
     body.innerHTML=summaryHtml+rowsHtml;
   }
@@ -3132,6 +3186,7 @@ async function signInWithGoogle(){
   const progressTimer=setTimeout(()=>{
     if(btn)btn.textContent='Still connecting…';
   },8000);
+  _signInFailNote='';
   const ok=await refreshToken(true,true);
   clearTimeout(progressTimer);
   if(ok){
@@ -3140,7 +3195,7 @@ async function signInWithGoogle(){
     localSave();
     syncFromDrive(0,false,true,'interactive sign-in just completed');
   }else{
-    showSync(_needDriveConsent?'Google Drive access was not allowed — tap again and tick the Drive box':'Sign-in unavailable — check your connection and try again','error');
+    showSync(_needDriveConsent?'Google Drive access was not allowed — tap again and tick the Drive box':(_signInFailNote||'Sign-in unavailable — check your connection and try again'),'error');
     // Found 9/30: without this, a known device (userInfo already present,
     // local data already there) stayed stuck on this screen indefinitely if
     // the attempt failed - identical to the "online per navigator.onLine,
@@ -6495,12 +6550,21 @@ function haversineKm(lat1,lon1,lat2,lon2){
   const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
+// v677: why a location lookup failed, written to the Sign-in log (at most one entry per 30 s) so a
+// "Location unavailable" on a particular phone can be diagnosed instead of guessed at.
+let _locLogAt=0;
+function _logLocFail(what){
+  if(Date.now()-_locLogAt<30000)return;
+  _locLogAt=Date.now();
+  try{logAuthEvent('location lookup failed: '+what+(document.hidden?' (app hidden)':''));}catch(e){}
+}
 function getCurrentLocation(force){
+  let answered=false;
   const geoPromise=new Promise(resolve=>{
-    if(!navigator.geolocation){resolve(null);return;}
+    if(!navigator.geolocation){_logLocFail('no geolocation support');resolve(null);return;}
     navigator.geolocation.getCurrentPosition(
-      pos=>resolve({lat:pos.coords.latitude,lon:pos.coords.longitude}),
-      ()=>resolve(null),
+      pos=>{answered=true;resolve({lat:pos.coords.latitude,lon:pos.coords.longitude});},
+      err=>{answered=true;_logLocFail('error code '+(err&&err.code)+' ('+({1:'permission denied',2:'position unavailable',3:'timed out'}[err&&err.code]||'unknown')+')'+(err&&err.message?': '+err.message:''));resolve(null);},
       {timeout:8000,maximumAge:force?0:300000}
     );
   });
@@ -6511,7 +6575,7 @@ function getCurrentLocation(force){
   // with no way to recover short of fully closing and reopening the app.
   // This independent JS-level timeout guarantees a resolution regardless of
   // whether the native API's own timeout actually fires.
-  const fallback=new Promise(resolve=>setTimeout(()=>resolve(null),10000));
+  const fallback=new Promise(resolve=>setTimeout(()=>{if(!answered)_logLocFail('no answer from the phone after 10 s');resolve(null);},10000));
   return Promise.race([geoPromise,fallback]);
 }
 // Raw "lat,lon" coordinates have no spaces, so browsers treat the whole string as one
@@ -6630,49 +6694,98 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
   renderFlights(document.getElementById('searchInput').value);
 }
 let _windCache={}; // site -> {data, fetchedAt}
+let _windRetryTimer=null,_windRetryFn=null; // v683: keep-trying loop for the Sites forecast (see renderSiteNotesCardList)
 const WIND_CACHE_MS=15*60*1000;
+// why the last forecast request failed (shown small on the card)
+let _windLastFail='';
+let _windObserver=null; // watches which site cards are on screen so only those fetch a forecast
+let _windBlockedUntil=0; // v679: after the forecast service says 'too many requests' (HTTP 429) nothing asks again for 5 minutes
+const _windInFlight={}; // coords -> the request already carrying it, so two callers never send the same site twice
+function _windReasonText(){return String(_windLastFail||'').replace(/[<>&"]/g,'').slice(0,60);} // small text under 'No data' on a card, plain text only
+function _parseWind(j){
+  return{
+    speed:Math.round(j.current.wind_speed_10m),
+    gust:Math.round(j.current.wind_gusts_10m),
+    dir:j.current.wind_direction_10m,
+    weatherCode:j.current.weather_code,
+    utcOffsetSeconds:j.utc_offset_seconds||0,
+    hourly:(j.hourly&&j.hourly.time)?j.hourly.time.map((t,i)=>({time:t,speed:j.hourly.wind_speed_10m[i],dir:j.hourly.wind_direction_10m[i],gust:j.hourly.wind_gusts_10m[i]})):[],
+    daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
+  };
+}
+// v679: ONE request for many sites. Before, every site sent its own request at the same moment (20 sites = 20 requests, plus up to 3 retry rounds each,
+// plus the same again from the start-up prefetch). The forecast service answered 'too many requests' (429) or the requests timed out - 189 failed lines in one log.
+// Open-Meteo accepts comma-separated latitude/longitude lists and replies with an array in the same order (checked against a live reply 11/12).
+async function _fetchWindChunk(chunk){
+  const lats=chunk.map(c=>parseFloat(c.split(',')[0])).join(',');
+  const lons=chunk.map(c=>parseFloat(c.split(',')[1])).join(',');
+  for(let attempt=0;attempt<1;attempt++){
+    try{
+      // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
+      // the default can occasionally show gust below sustained speed, a
+      // physically impossible value - confirmed directly in the raw API
+      // response, roughly 48% of hours in one real test. Explicitly requesting
+      // ECMWF's IFS model instead was tried and verified to never do this
+      // (168 hours checked at two real sites, zero violations, corroborated
+      // independently against Windy's own ECMWF view) - but it turned out to
+      // consistently overstate gust for this region's coastal/laminar terrain
+      // by roughly 2-3x versus Chris's own real logged flight history at these
+      // exact sites, making the forecast bar look uniformly unflyable even on
+      // genuinely good days. Chris's explicit call after comparing both: a
+      // forecast that's usually close to real experience with an occasional
+      // impossible value is more useful than one that's always physically
+      // valid but consistently unusable for its actual first-look purpose. Do
+      // not re-add a models= parameter without Chris raising this again -
+      // both directions of this tradeoff are already known and were weighed
+      // deliberately.
+      const url=`https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
+      const _t0=Date.now();
+      const _ctx=()=>'['+chunk.length+' sites, '+(document.visibilityState||'?')+', '+((navigator.connection&&navigator.connection.type)||'?')+'/'+((navigator.connection&&navigator.connection.effectiveType)||'?')+', '+Math.round((Date.now()-_t0)/100)/10+'s]';
+      let r;
+      try{r=await fetchWithTimeout(url,{},10000);}
+      catch(e){try{logAuthEvent('forecast request failed: '+((e&&e.message)||'error')+' '+_ctx());}catch(_){}throw e;}
+      if(!r.ok){
+        try{logAuthEvent('forecast HTTP '+r.status+' '+_ctx());}catch(_){}
+        _windLastFail='HTTP '+r.status+(r.status===429?' (too many requests)':'');
+        if(r.status===429){_windBlockedUntil=Date.now()+5*60*1000;log('forecast service said too many requests - pausing 5 min');}
+        return; // an error reply is not retried - asking again only makes it worse
+      }
+      const txt=await r.text();
+      try{logAuthEvent('forecast ok '+Math.round(byteLen(txt)/1024)+' KB '+_ctx());}catch(_){}
+      try{recordForecastBytes(byteLen(txt));}catch(e){}
+      const j=JSON.parse(txt);
+      const arr=Array.isArray(j)?j:[j];
+      let got=0;
+      chunk.forEach((c,i)=>{const one=arr[i];if(one&&one.current){_windCache[c]={data:_parseWind(one),fetchedAt:Date.now()};got++;}});
+      if(!got)_windLastFail='reply had no current data';
+      else if(got<chunk.length)log('forecast reply covered '+got+' of '+chunk.length+' sites');
+      return;
+    }catch(e){
+      _windLastFail=(e&&e.message)||'error';
+    }
+  }
+}
+async function fetchSitesWindBatch(coordsList,force){
+  const fresh=c=>_windCache[c]&&Date.now()-_windCache[c].fetchedAt<WIND_CACHE_MS;
+  const want=[...new Set(coordsList.filter(Boolean))].filter(c=>{const[la,lo]=c.split(',').map(parseFloat);return isFinite(la)&&isFinite(lo)&&(force||!fresh(c));});
+  if(!want.length)return;
+  if(Date.now()<_windBlockedUntil){_windLastFail='too many requests - waiting a few minutes';return;}
+  const todo=want.filter(c=>!_windInFlight[c]);
+  const waits=want.filter(c=>_windInFlight[c]).map(c=>_windInFlight[c]);
+  for(let k=0;k<todo.length;k+=1){ // v685: one small request per site again (not one big request for many) - one failed request now costs one card, not all of them
+    const chunk=todo.slice(k,k+1);
+    const p=_fetchWindChunk(chunk).finally(()=>chunk.forEach(c=>{delete _windInFlight[c];}));
+    chunk.forEach(c=>{_windInFlight[c]=p;});
+    waits.push(p);
+  }
+  await Promise.all(waits);
+}
 async function fetchSiteWind(coords,force){
   if(!coords)return null;
-  const cached=_windCache[coords];
-  if(!force&&cached&&Date.now()-cached.fetchedAt<WIND_CACHE_MS)return cached.data;
-  const[lat,lon]=coords.split(',').map(parseFloat);
-  try{
-    // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
-    // the default can occasionally show gust below sustained speed, a
-    // physically impossible value - confirmed directly in the raw API
-    // response, roughly 48% of hours in one real test. Explicitly requesting
-    // ECMWF's IFS model instead was tried and verified to never do this
-    // (168 hours checked at two real sites, zero violations, corroborated
-    // independently against Windy's own ECMWF view) - but it turned out to
-    // consistently overstate gust for this region's coastal/laminar terrain
-    // by roughly 2-3x versus Chris's own real logged flight history at these
-    // exact sites, making the forecast bar look uniformly unflyable even on
-    // genuinely good days. Chris's explicit call after comparing both: a
-    // forecast that's usually close to real experience with an occasional
-    // impossible value is more useful than one that's always physically
-    // valid but consistently unusable for its actual first-look purpose. Do
-    // not re-add a models= parameter without Chris raising this again -
-    // both directions of this tradeoff are already known and were weighed
-    // deliberately.
-    const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
-    const r=await fetchWithTimeout(url,{},10000);
-    if(!r.ok)return null;
-    const j=await r.json();
-    if(!j.current)return null;
-    const result={
-      speed:Math.round(j.current.wind_speed_10m),
-      gust:Math.round(j.current.wind_gusts_10m),
-      dir:j.current.wind_direction_10m,
-      weatherCode:j.current.weather_code,
-      utcOffsetSeconds:j.utc_offset_seconds||0,
-      hourly:(j.hourly&&j.hourly.time)?j.hourly.time.map((t,i)=>({time:t,speed:j.hourly.wind_speed_10m[i],dir:j.hourly.wind_direction_10m[i],gust:j.hourly.wind_gusts_10m[i]})):[],
-      daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
-    };
-    _windCache[coords]={data:result,fetchedAt:Date.now()};
-    return result;
-  }catch(e){
-    return null;
-  }
+  const t0=Date.now();
+  await fetchSitesWindBatch([coords],force);
+  const e=_windCache[coords];
+  return (e&&(!force||e.fetchedAt>=t0))?e.data:null;
 }
 // Warms the exact same two caches Sites' own render already reads from
 // (the browser's own geolocation cache via getCurrentLocation, and
@@ -6693,10 +6806,9 @@ function prefetchSitesWeather(){
   if(!shown.length)return; // nothing to warm, and no reason to prompt for location this early if there's nothing to show it for
   getCurrentLocation(false).then(loc=>{
     if(!loc)return; // same as today - Sites will retry this itself when opened
-    shown.forEach(({uuid})=>{
-      const c=siteCoordsByUuid[uuid];
-      if(c)fetchSiteWind(c,false);
-    });
+    // v679: warm only the 8 nearest sites, in one request - the rest load when scrolled to
+    const near=shown.map(({uuid})=>siteCoordsByUuid[uuid]).filter(Boolean).map(c=>{const[la,lo]=c.split(',').map(parseFloat);return{c,d:haversineKm(loc.lat,loc.lon,la,lo)};}).filter(x=>isFinite(x.d)).sort((x,y)=>x.d-y.d).slice(0,8);
+    fetchSitesWindBatch(near.map(x=>x.c),false);
   });
 }
 function fmtFlightWind(f){
@@ -6903,11 +7015,16 @@ function refreshAllWindBars(){
   document.querySelectorAll('[data-windbarsite]').forEach(el=>{
     const site=el.dataset.windbarsite;
     const data=_windDataCache[site];
+    if(data===undefined)return; // v679: card not loaded yet (not scrolled to) - leave it empty
     renderOneWindBar(el,data);
   });
 }
 let _windScrollLeftPx=0;
 let _windScrollIsFresh=true;
+// v681: the slider keeps its position while you are using the app, but after 30 minutes without touching it (or being away from the app that long)
+// it goes back to the current time, the same 30 minutes the Sites map uses.
+const WIND_SLIDER_STALE_MS=30*60*1000;
+let _windScrollTouchedAt=0;
 // Shared across every wind bar (not one state object per bar) - the mousemove/mouseup
 // listeners that use this are attached once, globally, in wire(), rather than re-added
 // on every render alongside the per-element mousedown below. Site cards re-render
@@ -6951,7 +7068,7 @@ function _startWindMomentum(scrollEl,listEl,velocity){
     if(newLeft<0){newLeft=0;_windMomentum.velocity=0;}
     else if(newLeft>maxScroll){newLeft=maxScroll;_windMomentum.velocity=0;}
     scrollEl.scrollLeft=newLeft;
-    _windScrollLeftPx=newLeft;
+    _windScrollLeftPx=newLeft;_windScrollTouchedAt=Date.now();
     listEl.querySelectorAll('[data-windscroll]').forEach(other=>{
       if(other!==scrollEl)other.scrollLeft=newLeft;
     });
@@ -6989,11 +7106,13 @@ function renderOneWindBar(containerEl,windData){
         ${bar.dayLabels.map(d=>`<span style="position:absolute;left:${d.percent.toFixed(2)}%;font-size:11px;font-weight:700;color:var(--text2);white-space:nowrap">${d.text}</span>`).join('')}
       </div>`:''}
     </div>`;
+  if(!_windScrollIsFresh&&_windScrollTouchedAt&&Date.now()-_windScrollTouchedAt>WIND_SLIDER_STALE_MS)_windScrollIsFresh=true; // position is old - go back to now
   if(_windScrollIsFresh&&bar.nowPercent!=null){
     const nowPx=bar.totalWidthPx*(bar.nowPercent/100);
     const visibleWidth=scrollEl.clientWidth||300;
     _windScrollLeftPx=Math.max(0,nowPx-visibleWidth*0.35); // a bit of past context visible, mostly future ahead
     _windScrollIsFresh=false; // only the first card to render computes this; the rest share it via sync
+    _windScrollTouchedAt=Date.now();
   }
   scrollEl.scrollLeft=_windScrollLeftPx;
 }
@@ -7352,10 +7471,12 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   }
   const map=L.map('siteMapContainer',{zoomControl:true});
   _siteMapInstance=map;
+  _siteMapDropPin=null; // a fresh map starts with no dropped pin
   const siteMapReadingEl=document.getElementById('siteMapReading');
   siteMapReadingEl.style.display='none';
   map.on('move',()=>{
     if(siteMapReadingEl.style.display==='none')return; // only live-update once it's actually been revealed
+    if(_siteMapDropPin)return; // a dropped pin owns the readout - it shows the pin's spot, not wherever the map is panned to
     const c=map.getCenter().wrap();
     siteMapReadingEl.textContent=`${c.lat.toFixed(6)}, ${c.lng.toFixed(6)}`;
   });
@@ -7512,6 +7633,57 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   const dismissSiteMapOverlays=()=>{layerMenu.style.display='none';document.getElementById('siteMapSearchResults').style.display='none';};
   map.getContainer().addEventListener('click',dismissSiteMapOverlays);
   map.on('click movestart zoomstart',dismissSiteMapOverlays);
+  // Long-press anywhere on the map drops a pin there and shows its GPS coordinates in the
+  // same readout pill the coordinate search uses (same 📍 as the site-location picker).
+  // Done with plain pointer events rather than Leaflet's 'contextmenu' so it behaves the
+  // same on Android and iPhone. A tap on the map takes the pin away again.
+  const dropIcon=L.divIcon({html:'<div style="font-size:34px;line-height:34px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.5))">📍</div>',className:'',iconSize:[34,34],iconAnchor:[17,34]});
+  let _pressTimer=null,_pressId=null,_pressStart=null,_dropAt=0;
+  const cancelPress=()=>{if(_pressTimer){clearTimeout(_pressTimer);_pressTimer=null;}_pressId=null;};
+  const dropPinAt=ll=>{
+    const w=ll.wrap();
+    if(_siteMapDropPin)_siteMapDropPin.setLatLng(w);
+    else _siteMapDropPin=L.marker(w,{icon:dropIcon,interactive:false,keyboard:false}).addTo(map);
+    _dropAt=Date.now();
+    siteMapReadingEl.style.display='block';
+    siteMapReadingEl.textContent=`${w.lat.toFixed(6)}, ${w.lng.toFixed(6)}`;
+    if(navigator.vibrate){try{navigator.vibrate(20);}catch(e){}}
+  };
+  // Tapping the readout copies the coordinates (works for a dropped pin and for a coordinate search).
+  siteMapReadingEl.style.cursor='pointer';
+  siteMapReadingEl.onclick=async()=>{
+    const txt=siteMapReadingEl.textContent.trim();
+    if(!txt||txt==='Copied ✓')return;
+    let ok=false;
+    try{await navigator.clipboard.writeText(txt);ok=true;}catch(e){
+      try{ // older WebViews without the async clipboard
+        const ta=document.createElement('textarea');ta.value=txt;ta.style.cssText='position:fixed;opacity:0';
+        document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');ta.remove();
+      }catch(e2){}
+    }
+    if(!ok)return;
+    siteMapReadingEl.textContent='Copied ✓';
+    setTimeout(()=>{if(siteMapReadingEl.textContent==='Copied ✓')siteMapReadingEl.textContent=txt;},1200);
+  };
+  const mapEl=map.getContainer();
+  mapEl.addEventListener('pointerdown',e=>{
+    if(e.target.closest('.leaflet-control,.leaflet-marker-icon,button,input'))return;
+    if(_pressTimer){cancelPress();return;} // a second finger means pinch-zooming, not a press
+    if(e.pointerType==='mouse'&&e.button!==0)return;
+    _pressId=e.pointerId;_pressStart={x:e.clientX,y:e.clientY};
+    const pt={clientX:e.clientX,clientY:e.clientY};
+    _pressTimer=setTimeout(()=>{_pressTimer=null;dropPinAt(map.mouseEventToLatLng(pt));},500);
+  });
+  mapEl.addEventListener('pointermove',e=>{
+    if(_pressTimer&&e.pointerId===_pressId&&Math.hypot(e.clientX-_pressStart.x,e.clientY-_pressStart.y)>10)cancelPress();
+  });
+  ['pointerup','pointercancel'].forEach(t=>mapEl.addEventListener(t,cancelPress));
+  mapEl.addEventListener('contextmenu',e=>e.preventDefault()); // no browser "save image" menu on a long press
+  map.on('zoomstart',cancelPress);
+  map.on('click',()=>{
+    if(Date.now()-_dropAt<700)return; // the click that ends the long press itself
+    if(_siteMapDropPin){clearSiteMapDropPin();siteMapReadingEl.style.display='none';}
+  });
   const siteIcon=L.divIcon({html:'🚩',className:'site-map-pin',iconSize:[28,28],iconAnchor:[14,26]});
   const bounds=[];
   sitesWithCoords.forEach(({uuid,name,coords})=>{
@@ -7541,12 +7713,13 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   // rather than coincidentally working depending on how fast the modal happens to open.
   map.invalidateSize();
   const focusRec=focusSite?sites.find(s=>!s._deleted&&(s.uuid===focusSite||s.name===focusSite)):null;
+  _siteMapOpenedFocused=!!((focusRec&&focusRec.coords)||focusPoint); // v675: opened to a specific site/point, so don't recenter on resume
   if(focusRec&&focusRec.coords){
     const[fLat,fLon]=focusRec.coords.split(',').map(parseFloat);
     map.setView([fLat,fLon],14);
   } else if(focusPoint){
     map.setView([focusPoint.lat,focusPoint.lon],14);
-  } else if(_siteMapLastView){
+  } else if(_siteMapLastView&&(Date.now()-_siteMapLastViewAt)<SITE_MAP_STALE_MS){
     // Not asked to jump to a specific site — restore wherever the map was last
     // left, rather than resetting to the local area every time it reopens.
     // Persisted per device (localStorage, not synced), so this survives fully
@@ -7581,11 +7754,43 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   map.on('moveend',()=>{
     const c=map.getCenter();
     _siteMapLastView={lat:c.lat,lon:c.lng,zoom:map.getZoom()};
-    localStorage.setItem('leeside_mapLastView',JSON.stringify(_siteMapLastView));
+    _siteMapLastViewAt=Date.now();
+    try{localStorage.setItem('leeside_mapLastView',JSON.stringify(_siteMapLastView));localStorage.setItem('leeside_mapLastViewAt',String(_siteMapLastViewAt));}catch(e){}
   });
 }
 
 let _siteMapLastLoc=null;
+// v675: where the map was left is only remembered for 30 minutes. After longer than that (map
+// unused, or app in the background) it goes back to your current area instead.
+const SITE_MAP_STALE_MS=30*60*1000;
+let _siteMapLastViewAt=(()=>{try{return parseInt(localStorage.getItem('leeside_mapLastViewAt'),10)||0;}catch(e){return 0;}})();
+let _siteMapOpenedFocused=false;
+let _siteMapHiddenAt=0;
+document.addEventListener('visibilitychange',async()=>{
+  if(document.hidden){_siteMapHiddenAt=Date.now();return;}
+  const away=_siteMapHiddenAt?Date.now()-_siteMapHiddenAt:0;
+  _siteMapHiddenAt=0;
+  const ov=document.getElementById('siteMapOverlay');
+  if(away<SITE_MAP_STALE_MS||!_siteMapInstance||!ov||!ov.classList.contains('open'))return;
+  if(_siteMapOpenedFocused||_siteMapDropPin)return; // looking at a specific site / a dropped pin - leave it
+  const loc=await getCurrentLocation(true).catch(()=>null);
+  if(!loc||!_siteMapInstance||!ov.classList.contains('open'))return; // no fix: stay where we are, no alert
+  _siteMapLastLoc=loc;
+  _siteMapInstance.setView([loc.lat,loc.lon],10);
+});
+let _windHiddenAt=0;
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&_windRetryFn)setTimeout(()=>{if(_windRetryFn)_windRetryFn();},1500);}); // v683: resume the forecast keep-trying loop once the app is back and the connection has settled
+window.addEventListener('online',()=>{if(_windRetryFn)setTimeout(()=>{if(_windRetryFn)_windRetryFn();},1500);});
+document.addEventListener('visibilitychange',()=>{ // v681: back in the app after 30+ minutes - the forecast slider goes back to the current time
+  if(document.hidden){_windHiddenAt=Date.now();return;}
+  const away=_windHiddenAt?Date.now()-_windHiddenAt:0;
+  _windHiddenAt=0;
+  if(away<WIND_SLIDER_STALE_MS)return;
+  _windScrollIsFresh=true;
+  if(document.querySelector('[data-windbarsite]'))refreshAllWindBars();
+});
+let _siteMapDropPin=null; // the pin dropped by a long press on the Sites map, if any
+function clearSiteMapDropPin(){if(_siteMapDropPin){_siteMapDropPin.remove();_siteMapDropPin=null;}}
 let _siteMapLastView=(()=>{ // {lat,lon,zoom} — remembers where you left the map, persisted per device (never synced), not reset by closing the app
   try{return JSON.parse(localStorage.getItem('leeside_mapLastView'));}catch(e){return null;}
 })();
@@ -7608,6 +7813,7 @@ async function runSiteMapSearch(){
   if(cp.error===undefined){
     _siteMapInstance.setView([cp.lat,cp.lon],15);
     resultsEl.style.display='none';
+    clearSiteMapDropPin();
     const readingEl=document.getElementById('siteMapReading');
     readingEl.style.display='block';
     readingEl.textContent=`${cp.lat.toFixed(6)}, ${cp.lon.toFixed(6)}`;
@@ -7763,6 +7969,7 @@ function _scheduleSiteLocRetry(){
   },delay);
 }
 async function renderSiteNotesCardList(force,q=''){
+  clearTimeout(_windRetryTimer);_windRetryFn=null; // a fresh render starts its own forecast loading; stop any older keep-trying loop
   q=q.trim();
   const listEl=document.getElementById('siteNotesCardList');
   if(!listEl)return;
@@ -7779,10 +7986,9 @@ async function renderSiteNotesCardList(force,q=''){
     // fetchSiteWind already returns cached data under 15 minutes old without a
     // real network call, so this only does real work right after a cold load.
     listEl.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3);font-size:14px">Checking current wind…</div>';
-    await Promise.all(sites.filter(s=>!s._deleted&&s.coords).map(async s=>{
-      const w=await fetchSiteWind(s.coords,false);
-      _windDataCache[s.uuid]=w;
-    }));
+    const _fs=sites.filter(s=>!s._deleted&&s.coords);
+    await fetchSitesWindBatch(_fs.map(s=>s.coords),false);
+    _fs.forEach(s=>{const e=_windCache[s.coords];_windDataCache[s.uuid]=(e&&Date.now()-e.fetchedAt<WIND_CACHE_MS)?e.data:null;});
   }
   const shown=getShownSites(q);
   if(!shown.length){
@@ -7820,7 +8026,7 @@ async function renderSiteNotesCardList(force,q=''){
           <span style="font-family:'Syne',sans-serif;font-weight:700;font-size:16px">🚩 ${name}</span>
           <span style="font-size:14px;color:var(--text2)">${distKm!==null?fmtDistance(distKm)+' away':'Location unavailable'}</span>
         </span>
-        ${coords?(()=>{const[wLat,wLon]=coords.split(',');const wUrl=`https://www.windy.com/${wLat}/${wLon}?${wLat},${wLon},11`;return`<a href="${wUrl}" target="_blank" rel="noopener" data-windslot="${uuid}" onclick="event.stopPropagation();openExternalWithDataCheck(event,'${wUrl}','Windy')" style="color:var(--text3);font-size:var(--fs-sm);text-align:right;text-decoration:none">…</a>`;})():`<span data-windslot="${uuid}" style="color:var(--text3);font-size:var(--fs-sm);text-align:right"></span>`}
+        ${coords?(()=>{const[wLat,wLon]=coords.split(',');const wUrl=`https://www.windy.com/${wLat}/${wLon}/wind?${wLat},${wLon},11`;return`<a href="${wUrl}" target="_blank" rel="noopener" data-windslot="${uuid}" onclick="event.stopPropagation();openExternalWithDataCheck(event,'${wUrl}','Windy')" style="color:var(--text3);font-size:var(--fs-sm);text-align:right;text-decoration:none">…</a>`;})():`<span data-windslot="${uuid}" style="color:var(--text3);font-size:var(--fs-sm);text-align:right"></span>`}
       </div>
       ${coords?`<div data-windbarsite="${uuid}" style="display:flex;align-items:center;gap:10px;margin-top:12px" onclick="event.stopPropagation()">
         <span data-windtoggle style="flex-shrink:0;font-size:10px;font-weight:700;color:var(--text2);background:var(--surface2);border-radius:8px;padding:4px 7px;text-align:center;line-height:1.2;cursor:pointer">${_windGranularity}</span>
@@ -7829,14 +8035,16 @@ async function renderSiteNotesCardList(force,q=''){
     </div>`;
   }).join('');
 
-  // Fetch wind in parallel, fill in each card as it resolves — don't block the list on this
-  withDist.forEach(({uuid})=>{
+  // v679: forecasts load only for the cards that are on screen. A site you have not scrolled to costs no request, and the cards that appear
+  // together are fetched in ONE request. Cards whose forecast is already cached (under 15 minutes old) paint straight away.
+  const _windFresh=c=>_windCache[c]&&Date.now()-_windCache[c].fetchedAt<WIND_CACHE_MS;
+  const _fillWindCard=uuid=>{
     const coords=siteCoordsByUuid[uuid];
-    if(!coords)return;
-    fetchSiteWind(coords,force).then(w=>{
+    const w=(coords&&_windFresh(coords))?_windCache[coords].data:null;
+    {
       const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
       if(slot){
-        if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span>';}
+        if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span><br><span style="color:var(--text3);font-size:11px">Pull down to refresh</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');}
         else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>`;}
       }
       const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
@@ -7844,8 +8052,73 @@ async function renderSiteNotesCardList(force,q=''){
       _windDataCache[uuid]=w;
       const barContainer=listEl.querySelector(`[data-windbarsite="${uuid}"]`);
       if(barContainer)renderOneWindBar(barContainer,w);
-    });
-  });
+    }
+  };
+  const _showWindRetry=uuid=>{const sl=listEl.querySelector(`[data-windslot="${uuid}"]`);if(sl)sl.innerHTML='<span style="color:var(--text2);font-size:14px">Retrying…</span>'+(_windLastFail?'<br><span style="color:var(--text3);font-size:11px">'+_windReasonText()+'</span>':'');};
+  const _loadWindFor=async uuids=>{
+    const coordsOf=u=>siteCoordsByUuid[u];
+    await fetchSitesWindBatch(uuids.map(coordsOf),force);
+    // v685: no automatic retry rounds (as before v670). A site that does not answer shows 'No data' and a pull-down asks again.
+    const _miss=uuids.filter(u=>coordsOf(u)&&!_windFresh(coordsOf(u)));
+    if(_miss.length){log('forecast missing for '+_miss.length+' site(s): '+_windLastFail);try{logAuthEvent('forecast missing for '+_miss.length+' of '+uuids.length+' site(s): '+_windLastFail);}catch(e){}}
+    uuids.forEach(_fillWindCard);
+    _keepTrying(uuids);
+  };
+  // v683: if the forecast still is not there after the quick retries, keep asking once a minute for as long as the Sites tab is open
+  // and the app is on screen (up to 30 minutes), instead of leaving 'No data' until the user pulls down. Pauses in the background and
+  // resumes when the app comes back to the screen or the connection returns. A 'too many requests' reply is still respected.
+  let _ktCount=0;
+  const _ktSet=new Set(); // every card (nearest batch, and batches added by scrolling) that is still waiting for its forecast
+  const _ktMiss=()=>[..._ktSet].filter(u=>siteCoordsByUuid[u]&&!_windFresh(siteCoordsByUuid[u]));
+  const _ktAttempt=async()=>{
+    clearTimeout(_windRetryTimer);
+    const tabEl=document.getElementById('tab-sites');
+    if(!tabEl||!tabEl.classList.contains('active')){_windRetryFn=null;return;} // left the Sites tab - opening it again loads afresh
+    if(document.hidden)return; // paused; the visibility listener calls this again on return
+    if(++_ktCount>30){_windRetryFn=null;return;}
+    const was=_ktMiss();
+    if(!was.length){_windRetryFn=null;return;}
+    was.forEach(_showWindRetry);
+    await fetchSitesWindBatch(was.map(u=>siteCoordsByUuid[u]),true);
+    was.forEach(_fillWindCard);
+    if(_ktMiss().length){_windRetryTimer=setTimeout(_ktAttempt,60000);}
+    else{_windRetryFn=null;try{logAuthEvent('forecast recovered by keep-trying after '+_ktCount+' more tries');}catch(e){}}
+  };
+  const _keepTrying=uuids=>{
+    uuids.forEach(u=>_ktSet.add(u));
+    if(!_ktMiss().length)return;
+    if(_windRetryFn===_ktAttempt)return; // loop already running for this render
+    _windRetryFn=_ktAttempt;
+    clearTimeout(_windRetryTimer);
+    _windRetryTimer=setTimeout(_ktAttempt,60000);
+  };
+  const _windQueue=new Set();let _windFlushT=null;
+  const _queueWind=uuid=>{
+    _windQueue.add(uuid);
+    clearTimeout(_windFlushT);
+    _windFlushT=setTimeout(()=>{const u=[..._windQueue];_windQueue.clear();_loadWindFor(u);},250); // cards that appear together go out as one request
+  };
+  if(_windObserver){_windObserver.disconnect();_windObserver=null;}
+  const _windSlots=withDist.filter(({uuid})=>siteCoordsByUuid[uuid]).map(({uuid})=>uuid);
+  const _needLoad=[];
+  _windSlots.forEach(uuid=>{if(!force&&_windFresh(siteCoordsByUuid[uuid]))_fillWindCard(uuid);else _needLoad.push(uuid);});
+  // the list is sorted nearest-first: the 15 nearest sites load right away (one request); the rest wait until scrolled to
+  const _nearest=new Set(_windSlots.slice(0,15));
+  _needLoad.filter(u=>_nearest.has(u)).forEach(_queueWind);
+  _needLoad.splice(0,_needLoad.length,..._needLoad.filter(u=>!_nearest.has(u)));
+  if('IntersectionObserver' in window){
+    _windObserver=new IntersectionObserver(entries=>{
+      entries.forEach(en=>{
+        if(!en.isIntersecting)return;
+        const uuid=en.target.getAttribute('data-windslot');
+        _windObserver&&_windObserver.unobserve(en.target);
+        _queueWind(uuid);
+      });
+    },{rootMargin:'0px 0px 300px 0px'});
+    _needLoad.forEach(uuid=>{const el=listEl.querySelector(`[data-windslot="${uuid}"]`);if(el)_windObserver.observe(el);});
+  }else{
+    _needLoad.forEach(_queueWind); // very old browser without IntersectionObserver: load them all (still batched)
+  }
 
   // Wire up toggle taps (delegated once per render)
   listEl.querySelectorAll('[data-windtoggle]').forEach(t=>t.onclick=()=>cycleWindGranularity());
@@ -7883,7 +8156,7 @@ async function renderSiteNotesCardList(force,q=''){
         e.stopPropagation(); // don't let this also read as a tab-swipe on #content
         const newLeft=state.startScrollLeft-dx;
         scrollEl.scrollLeft=newLeft;
-        _windScrollLeftPx=newLeft;
+        _windScrollLeftPx=newLeft;_windScrollTouchedAt=Date.now();
         listEl.querySelectorAll('[data-windscroll]').forEach(other=>{
           if(other!==scrollEl)other.scrollLeft=newLeft;
         });
@@ -7934,7 +8207,7 @@ async function renderSiteNotesCardList(force,q=''){
       e.preventDefault();
       const newLeft=scrollEl.scrollLeft+e.deltaX;
       scrollEl.scrollLeft=newLeft;
-      _windScrollLeftPx=newLeft;
+      _windScrollLeftPx=newLeft;_windScrollTouchedAt=Date.now();
       listEl.querySelectorAll('[data-windscroll]').forEach(other=>{
         if(other!==scrollEl)other.scrollLeft=newLeft;
       });
@@ -7998,7 +8271,7 @@ function showNoteView(nid,siteKey){
       const inner=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>`;
       if(!curCoords)return`<div style="flex-shrink:0;text-align:right">${inner}</div>`;
       const[wLat,wLon]=curCoords.split(',');
-      const wUrl=`https://www.windy.com/${wLat}/${wLon}?${wLat},${wLon},11`;
+      const wUrl=`https://www.windy.com/${wLat}/${wLon}/wind?${wLat},${wLon},11`;
       return`<a href="${wUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation();openExternalWithDataCheck(event,'${wUrl}','Windy')" style="flex-shrink:0;text-align:right;text-decoration:none">${inner}</a>`;
     };
     const windBlock=buildWindBlock(w);
@@ -8013,14 +8286,14 @@ function showNoteView(nid,siteKey){
     const headerHtml=isDesktopPlatform?`
       <div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px">
-          <div id="noteViewTitle" class="detail-site" style="flex:1;min-width:0">${n.title||curName}</div>
+          <div id="noteViewTitle" class="detail-site" style="flex:1;min-width:0">${curName}</div>
           <div id="noteViewWindSlot" style="flex-shrink:0">${windBlock}</div>
         </div>
         ${distRow}
         ${buttonsRow}
       </div>`:`
       <div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border);position:relative">
-        <div id="noteViewTitle" class="detail-site" style="padding-right:${w?'90px':'0'}">${n.title||curName}</div>
+        <div id="noteViewTitle" class="detail-site" style="padding-right:${w?'90px':'0'}">${curName}</div>
         <div id="noteViewWindSlot" style="position:absolute;top:0;right:0">${windBlock}</div>
         ${distRow}
         ${buttonsRow}
@@ -9709,7 +9982,6 @@ function openEditSiteModal(name){
   document.getElementById('esCoords').value=(_editSiteUuid&&siteCoordsByUuid[_editSiteUuid])||'';
   document.getElementById('esCountry').value=_editSiteUuid?countryNameToAlpha3(siteCountryByUuid[_editSiteUuid]):'';
   const existingNote=_editSiteUuid?siteNotesByUuid[_editSiteUuid]:null;
-  document.getElementById('esTitle').value=(existingNote&&existingNote.title)||name||'';
   document.getElementById('esNote').value=(existingNote&&existingNote.body)||'';
   document.getElementById('esNewLaunch').value='';
   esExPhotos=existingNote&&existingNote.photos?existingNote.photos.map(p=>typeof p==='object'&&p?{...p}:p):[];
@@ -10306,7 +10578,10 @@ async function saveSiteEdit(){
   }
   const countryCode=document.getElementById('esCountry').value.trim();
   const country=countryCode?(alpha3ToCountryName(countryCode)||countryCode.toUpperCase()):null;
-  const title=document.getElementById('esTitle').value.trim();
+  // v673: a site's note no longer has a heading of its own. The stored title is always the site's current name
+  // (kept so older app versions, backups and shared-site export/import keep working exactly as before), and
+  // the site page shows the live site name, so renaming a site can never leave a stale heading behind.
+  const title=newName;
   const noteBody=document.getElementById('esNote').value.trim();
   const oldName=_editSiteOriginalName;
 
@@ -11346,6 +11621,7 @@ function wire(){
     const res=resultsEl._results[parseInt(row.dataset.searchresult)];
     _siteMapInstance.setView([parseFloat(res.lat),parseFloat(res.lon)],15);
     resultsEl.style.display='none';
+    clearSiteMapDropPin();
     const readingEl=document.getElementById('siteMapReading');
     readingEl.style.display='block';
     readingEl.textContent=`${parseFloat(res.lat).toFixed(6)}, ${parseFloat(res.lon).toFixed(6)}`;
@@ -11951,7 +12227,7 @@ function wire(){
     const dx=e.clientX-_windDragState.startX;
     const newLeft=_windDragState.startScrollLeft-dx;
     _windDragState.el.scrollLeft=newLeft;
-    _windScrollLeftPx=newLeft;
+    _windScrollLeftPx=newLeft;_windScrollTouchedAt=Date.now();
     document.querySelectorAll('[data-windscroll]').forEach(other=>{
       if(other!==_windDragState.el)other.scrollLeft=newLeft;
     });
