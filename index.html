@@ -1145,7 +1145,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v669';
+const APP_VERSION='v704';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -2570,7 +2570,7 @@ async function syncPhotosNow(){
   if(currentTab==='log')renderFlights(document.getElementById('searchInput').value);
   else if(currentTab==='notes')renderNotes();
   else if(currentTab==='gear')renderGear();
-  else if(currentTab==='sites')renderSiteNotesCardList();
+  else if(currentTab==='sites')renderSiteNotesCardList(false,'',true);
 }
 
 // A real standalone backup keeps live photo data — it has nowhere else (no Drive) to
@@ -3983,7 +3983,7 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
     if(currentTab==='log')renderFlights(document.getElementById('searchInput').value);
     else if(currentTab==='notes')renderNotes();
     else if(currentTab==='gear')renderGear();
-    else if(currentTab==='sites')renderSiteNotesCardList();
+    else if(currentTab==='sites')renderSiteNotesCardList(false,'',true);
     else if(currentTab==='stats')renderStats();
     // Also refresh an open detail view, if any - see the capture at the top
     // of this function for why. Re-checks the overlay is still open now,
@@ -4432,7 +4432,7 @@ async function showTab(name){
       sinp.value='';
       document.getElementById('siteSearchClear').style.display='none';
       document.getElementById('siteMapViewBtn').style.display='flex';
-      renderSiteNotesCardList(false,'');
+      renderSiteNotesCardList(false,'',true);
     }
   }
   currentTab=name;
@@ -6488,10 +6488,22 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
 }
 let _windCache={}; // site -> {data, fetchedAt}
 const WIND_CACHE_MS=15*60*1000;
+// v704: _windInflight lets two callers asking for the same site at the same time share ONE
+// Open-Meteo request; _windTried records that a site has been asked for at least once, so a
+// redraw that is not about the forecast (see renderSiteNotesCardList's noFetch) never has to ask again.
+let _windInflight={}, _windTried={};
 async function fetchSiteWind(coords,force){
   if(!coords)return null;
   const cached=_windCache[coords];
   if(!force&&cached&&Date.now()-cached.fetchedAt<WIND_CACHE_MS)return cached.data;
+  if(!force&&_windInflight[coords])return _windInflight[coords];
+  _windTried[coords]=true;
+  const p=_fetchSiteWindNet(coords);
+  _windInflight[coords]=p;
+  p.then(()=>{if(_windInflight[coords]===p)delete _windInflight[coords];});
+  return p;
+}
+async function _fetchSiteWindNet(coords){
   const[lat,lon]=coords.split(',').map(parseFloat);
   try{
     // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
@@ -7526,7 +7538,7 @@ function returnFromSiteNote(){
       document.getElementById('siteSearchClear').style.display='none';
       document.getElementById('siteMapViewBtn').style.display='flex';
     }
-    renderSiteNotesCardList(false,'');
+    renderSiteNotesCardList(false,'',true);
   }
 }
 
@@ -7619,7 +7631,13 @@ function _scheduleSiteLocRetry(){
     }catch(e){}
   },delay);
 }
-async function renderSiteNotesCardList(force,q=''){
+// v704: noFetch=true is for redraws that have nothing to do with the forecast (a finished sync,
+// an edit, a save, a delete, an import, typing in the search box). They paint from what is
+// already known and never send an Open-Meteo request - except for a site that has never been
+// asked for at all (e.g. a brand-new site or changed coordinates). The forecast is refreshed
+// by the things that are actually about it: opening the Sites tab, returning to the app,
+// pulling down, and the wind-search filter.
+async function renderSiteNotesCardList(force,q='',noFetch=false){
   q=q.trim();
   const listEl=document.getElementById('siteNotesCardList');
   if(!listEl)return;
@@ -7690,7 +7708,7 @@ async function renderSiteNotesCardList(force,q=''){
   withDist.forEach(({uuid})=>{
     const coords=siteCoordsByUuid[uuid];
     if(!coords)return;
-    fetchSiteWind(coords,force).then(w=>{
+    const paintWind=w=>{
       const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
       if(slot){
         if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span>';}
@@ -7701,7 +7719,14 @@ async function renderSiteNotesCardList(force,q=''){
       _windDataCache[uuid]=w;
       const barContainer=listEl.querySelector(`[data-windbarsite="${uuid}"]`);
       if(barContainer)renderOneWindBar(barContainer,w);
-    });
+    };
+    if(noFetch){
+      const c=_windCache[coords];
+      if(c){paintWind(c.data);return;}                       // already have it - just show it
+      if(_windInflight[coords]){_windInflight[coords].then(paintWind);return;} // one is on its way - wait for that
+      if(_windTried[coords]){paintWind(_windDataCache[uuid]||null);return;}    // already asked and got nothing - don't ask again from here
+    }
+    fetchSiteWind(coords,force).then(paintWind);
   });
 
   // Wire up toggle taps (delegated once per render)
@@ -8204,7 +8229,7 @@ async function saveNote(){
     touchSite(editSiteKey,{note:noteObj});
     scheduleSave();closeOverlay('noteOverlay');
     showNoteView(null,editSiteKey);
-    renderSiteNotesCardList();
+    renderSiteNotesCardList(false,'',true);
     return;
   }
   if(!title&&!body){await showAlert('Please enter a title or some text for the note.');return;}
@@ -10229,7 +10254,7 @@ async function saveSiteEdit(){
 
   scheduleSave();
   closeOverlay('editSiteOverlay');
-  renderSiteNotesCardList();
+  renderSiteNotesCardList(false,'',true);
   showNoteView(null,newName);
   }finally{
     setTimeout(()=>{_saveSiteEditBusy=false;},600);
@@ -10240,7 +10265,7 @@ async function deleteSiteFromEdit(){
   if(!_editSiteUuid)return;
   await deleteSite(_editSiteUuid);
   closeOverlay('editSiteOverlay');
-  renderSiteNotesCardList();
+  renderSiteNotesCardList(false,'',true);
 }
 
 // ═══════════════════════════════════════
@@ -10612,7 +10637,7 @@ async function importSharedSiteText(pasted){
     // the imported hospital as primary (autoFound:false) and only add a fresh
     // alternates list around it, rather than replace the sender's choice.
     if(newSite.coords)lookupEmergencyForSite(newSite.name,true);
-    renderSiteNotesCardList();
+    renderSiteNotesCardList(false,'',true);
     await showAlert(`Imported "${incoming.name}" successfully!`);
   }catch(err){
     await showAlert("Couldn't read that — make sure you pasted the whole shared message.");
@@ -11440,7 +11465,7 @@ function wire(){
       // OLD unit even though nothing here marks them as such. Clear the fetch
       // cache so the next time sites are shown, it fetches fresh data in the
       // new unit instead of just relabeling stale numbers.
-      _windCache={};
+      _windCache={};_windTried={};
     }
     saveSettings();
   });
@@ -12133,12 +12158,12 @@ function wire(){
 
   document.getElementById('siteSearchInput').addEventListener('input',function(){
     document.getElementById('siteMapViewBtn').style.display=this.value?'none':'flex';
-    renderSiteNotesCardList(false,this.value);
+    renderSiteNotesCardList(false,this.value,true);
     document.getElementById('siteSearchClear').style.display=this.value?'block':'none';
   });
   document.getElementById('siteSearchClear').addEventListener('click',()=>{
     const inp=document.getElementById('siteSearchInput');
-    inp.value='';renderSiteNotesCardList(false,'');
+    inp.value='';renderSiteNotesCardList(false,'',true);
     document.getElementById('siteSearchClear').style.display='none';
     document.getElementById('siteMapViewBtn').style.display='flex';
     inp.focus();
@@ -12285,6 +12310,7 @@ function wire(){
     _showDeferredSignIn();
     if(!canSync()){showSync(settings.wifiOnly?'Data Saver on — will sync on WiFi':'Working offline','offline',0);return;}
     log('event: browser came back online');
+    _refreshSitesForecastOnReturn();
     if(accessToken)syncFromDrive(0,false,false,'online event');
     else showSync('Sign-in needed — tap to reconnect','offline',0);
   });
@@ -12371,6 +12397,21 @@ document.addEventListener('visibilitychange',()=>{
 
 // Save immediately when app is backgrounded or closed
 let _bgRefreshInterval=null;
+// v704: coming back to the app (or the connection coming back) is a real reason to refresh the
+// forecast, so it is asked for here, directly - not as a side effect of the sync finishing.
+// Only when Sites is the visible tab, nothing is being searched, and some site's copy has expired.
+function _refreshSitesForecastOnReturn(){
+  try{
+    if(currentTab!=='sites')return;
+    const tabEl=document.getElementById('tab-sites');
+    if(!tabEl||!tabEl.classList.contains('active'))return;
+    const sinp=document.getElementById('siteSearchInput');
+    if(sinp&&sinp.value.trim())return;
+    const now=Date.now();
+    const stale=sites.some(s=>!s._deleted&&s.coords&&!(_windCache[s.coords]&&now-_windCache[s.coords].fetchedAt<WIND_CACHE_MS));
+    if(stale)renderSiteNotesCardList(false,'');
+  }catch(e){}
+}
 function _backgroundRefreshCheck(){
   // Only ever does anything if the app is actually hidden right now — a
   // recurring timer that fires while the app is in the foreground is exactly
@@ -12395,6 +12436,7 @@ document.addEventListener('visibilitychange',async()=>{
   if(_bgRefreshInterval){clearInterval(_bgRefreshInterval);_bgRefreshInterval=null;}
   // the 'online' event may have fired and been missed while backgrounded
   log(`event: app returned to foreground (canSync=${canSync()}, token=${accessToken?'yes':'no'})`);
+  _refreshSitesForecastOnReturn();
   if(canSync()){
     if(accessToken){
       syncFromDrive(0,false,false,'foreground return');
