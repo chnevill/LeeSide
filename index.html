@@ -1145,7 +1145,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v704';
+const APP_VERSION='v705';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -12071,6 +12071,7 @@ function wire(){
       if(!pulling)return;
       pulling=false;
       if(triggered){
+        spinner.style.transform=''; // v705: the pull leaves an inline rotate() on this; the spin animation only has an end value, so it would start from that angle and just jitter ~90deg instead of turning
         spinner.classList.add('spinning');
         indicator.style.top='14px';
         indicator.style.opacity=1;
@@ -12124,6 +12125,7 @@ function wire(){
       if(!pulling)return;
       pulling=false;
       if(triggered){
+        spinner.style.transform=''; // v705: the pull leaves an inline rotate() on this; the spin animation only has an end value, so it would start from that angle and just jitter ~90deg instead of turning
         spinner.classList.add('spinning');
         indicator.style.top='14px';
         indicator.style.opacity=1;
