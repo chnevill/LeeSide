@@ -1147,7 +1147,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v710';
+const APP_VERSION='v711';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -5254,6 +5254,19 @@ let _detailIdx=0;
 // (dashboard/stats "best flight" links) so a lingering search doesn't leak in there.
 let _detailNavList=null;
 
+// v711: tap a note's text (or title) to open it for editing - same behavior as general notes.
+// Taps on links, checklist items, embeds, photos and buttons keep doing their own thing,
+// and so does selecting text.
+function _tapToEdit(el,fn){
+  if(!el)return;
+  el.style.cursor='pointer';
+  el.onclick=e=>{
+    if(e.target.closest('a,img,iframe,button,video,audio,[data-checktoggle],[data-uncheckall],[data-embed-placeholder]'))return;
+    const sel=window.getSelection&&window.getSelection();
+    if(sel&&String(sel).length)return;
+    fn();
+  };
+}
 function showDetail(id){
   const sorted=_detailNavList||getSortedFlights();
   const idx=sorted.findIndex(x=>x.id===id);
@@ -5304,6 +5317,7 @@ function showDetail(id){
     <button class="btn btn-gold" id="detailEditBtn">Edit Flight</button>
     <button class="btn btn-ghost" id="detailCloseBtn" style="margin-top:8px">Close</button>`;
   setTimeout(()=>{_resetViewScroll('detailSheet');},30);
+  _tapToEdit(document.querySelector('#detailContent .detail-notes-box'),()=>{closeOverlay('detailOverlay');openFlightModal(f.id);});
   if(!document.getElementById('detailOverlay').classList.contains('open')){
     openOverlay('detailOverlay');
   }
@@ -8332,6 +8346,10 @@ function showNoteView(nid,siteKey){
       window.open(`https://www.openaip.net/map#11/${lat}/${lon}`,'_blank');
     };
     document.getElementById('noteViewEditBtn').onclick=()=>{closeOverlay('noteViewOverlay');openEditSiteModal(curName);};
+    const _siteTapEdit=()=>{closeOverlay('noteViewOverlay');openEditSiteModal(curName);};
+    _tapToEdit(document.querySelector('#noteViewContent .note-view-body'),_siteTapEdit);
+    _tapToEdit(document.getElementById('noteViewTitle'),_siteTapEdit);
+    const _siteBody=document.querySelector('#noteViewContent .note-view-body');if(_siteBody)_siteBody.style.minHeight='56px';
     document.getElementById('noteViewEmergencyBtn').onclick=()=>{openEmergencyPage(curName);};
     document.getElementById('noteViewCloseBtn').onclick=()=>{closeOverlay('noteViewOverlay');returnFromSiteNote();};
     openOverlay('noteViewOverlay',()=>{closeOverlay('noteViewOverlay');returnFromSiteNote();});
@@ -8823,6 +8841,9 @@ function _showGearByFlat(flatIdx,all){
     <button class="btn btn-ghost" id="gearViewCloseBtn" style="margin-top:8px">Close</button>`;
   setTimeout(()=>{_resetViewScroll('gearViewSheet');},30);
   document.getElementById('gearViewEditBtn').addEventListener('click',()=>{closeOverlay('gearViewOverlay');openGearDetail(cat,idx);});
+  const _gearTapEdit=()=>{closeOverlay('gearViewOverlay');openGearDetail(cat,idx);};
+  _tapToEdit(document.querySelector('#gearViewContent .detail-hero .detail-site'),_gearTapEdit);
+  document.querySelectorAll('#gearViewContent .dc.full').forEach(c=>{const l=c.querySelector('.dc-lbl');if(l&&l.textContent.trim()==='Notes')_tapToEdit(c,_gearTapEdit);});
   document.getElementById('gearViewCloseBtn').addEventListener('click',()=>closeOverlay('gearViewOverlay'));
   if(!document.getElementById('gearViewOverlay').classList.contains('open')){
     openOverlay('gearViewOverlay');
