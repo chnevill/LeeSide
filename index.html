@@ -1145,7 +1145,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v705';
+const APP_VERSION='v706';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6498,14 +6498,51 @@ async function fetchSiteWind(coords,force){
   if(!force&&cached&&Date.now()-cached.fetchedAt<WIND_CACHE_MS)return cached.data;
   if(!force&&_windInflight[coords])return _windInflight[coords];
   _windTried[coords]=true;
-  const p=_fetchSiteWindNet(coords);
+  const p=_fetchSiteWindNet(coords,!!force);
   _windInflight[coords]=p;
   p.then(()=>{if(_windInflight[coords]===p)delete _windInflight[coords];});
   return p;
 }
-async function _fetchSiteWindNet(coords){
+// v706: forecast requests go out at most WIND_MAX_PARALLEL at a time, nearest site first (the
+// order the cards are drawn in), instead of one per site all at once. Evidence from Chris's
+// own iPhone log: 20 simultaneous requests got HTTP 429 (11/10) or all timed out together
+// (11/12). A request that takes longer than 10 s is now really cancelled (AbortController),
+// so it can't keep holding a connection. A 429 is retried once after a pause; a timeout or
+// network failure is NOT retried automatically (retries are what stacked up before). If the
+// first few requests of a batch all fail with no success, the rest of that batch is not sent
+// (the server is clearly not answering) - a pull-down always tries again. Every failure, and
+// a one-line summary of each batch, is written to the debug log.
+const WIND_MAX_PARALLEL=4;
+let _windActive=0;
+const _windQueue=[];
+let _windBatch=null;
+let _windRetrying=0; // sites currently waiting out a 429 pause - keeps the batch (and its one summary line) open
+function _windNewBatch(){return{t0:Date.now(),ok:0,fail:0,skipped:0,r429:0,kinds:{},logged:0};}
+function _windPump(){
+  while(_windActive<WIND_MAX_PARALLEL&&_windQueue.length){_windActive++;_windQueue.shift()();}
+}
+function _windSlot(){
+  if(!_windBatch)_windBatch=_windNewBatch();
+  return new Promise(res=>{_windQueue.push(res);_windPump();});
+}
+function _windRelease(){
+  _windActive--;
+  _windPump();
+  if(_windActive===0&&!_windQueue.length&&!_windRetrying&&_windBatch){
+    const bt=_windBatch;_windBatch=null;
+    try{
+      const kinds=Object.keys(bt.kinds).map(k=>k+': '+bt.kinds[k]).join(', ');
+      log(`forecast batch: ${bt.ok} ok, ${bt.fail} failed${kinds?' ('+kinds+')':''}${bt.skipped?', '+bt.skipped+' not sent after repeated failures':''}${bt.r429?', '+bt.r429+' retried after 429':''}, took ${((Date.now()-bt.t0)/1000).toFixed(1)} s, app ${document.visibilityState}`);
+    }catch(_){}
+  }
+}
+function _windNoteFail(coords,kind,ms){
+  const bt=_windBatch;if(!bt)return;
+  bt.fail++;bt.kinds[kind]=(bt.kinds[kind]||0)+1;
+  if(bt.logged<5){bt.logged++;try{log(`forecast fetch failed for ${coords}: ${kind} (after ${ms} ms)`);}catch(_){}}
+}
+async function _fetchSiteWindNet(coords,force){
   const[lat,lon]=coords.split(',').map(parseFloat);
-  try{
     // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
     // the default can occasionally show gust below sustained speed, a
     // physically impossible value - confirmed directly in the raw API
@@ -6524,22 +6561,54 @@ async function _fetchSiteWindNet(coords){
     // both directions of this tradeoff are already known and were weighed
     // deliberately.
     const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
-    const r=await fetchWithTimeout(url,{},10000);
-    if(!r.ok)return null;
-    const j=await r.json();
-    if(!j.current)return null;
-    const result={
-      speed:Math.round(j.current.wind_speed_10m),
-      gust:Math.round(j.current.wind_gusts_10m),
-      dir:j.current.wind_direction_10m,
-      weatherCode:j.current.weather_code,
-      utcOffsetSeconds:j.utc_offset_seconds||0,
-      hourly:(j.hourly&&j.hourly.time)?j.hourly.time.map((t,i)=>({time:t,speed:j.hourly.wind_speed_10m[i],dir:j.hourly.wind_direction_10m[i],gust:j.hourly.wind_gusts_10m[i]})):[],
-      daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
-    };
-    _windCache[coords]={data:result,fetchedAt:Date.now()};
-    return result;
-  }catch(e){
+  let attempt=0;
+  while(true){
+    await _windSlot();
+    const bt=_windBatch;
+    // Several failures in a row and nothing has worked yet in this batch: don't send the rest.
+    if(!force&&bt&&bt.ok===0&&bt.fail>=WIND_MAX_PARALLEL){
+      bt.skipped++;_windRelease();return null;
+    }
+    const ac=new AbortController();
+    const tm=setTimeout(()=>ac.abort(),10000);
+    const t0=Date.now();
+    let status=0,j=null,kind='';
+    try{
+      const r=await fetch(url,{signal:ac.signal});
+      status=r.status;
+      if(r.ok)j=await r.json();
+    }catch(e){
+      kind=(e&&e.name==='AbortError')?'timed out (10 s)':'network error ('+((e&&e.message)||'unknown')+')';
+    }
+    clearTimeout(tm);
+    const ms=Date.now()-t0;
+    if(j&&j.current){
+      const result={
+        speed:Math.round(j.current.wind_speed_10m),
+        gust:Math.round(j.current.wind_gusts_10m),
+        dir:j.current.wind_direction_10m,
+        weatherCode:j.current.weather_code,
+        utcOffsetSeconds:j.utc_offset_seconds||0,
+        hourly:(j.hourly&&j.hourly.time)?j.hourly.time.map((t,i)=>({time:t,speed:j.hourly.wind_speed_10m[i],dir:j.hourly.wind_direction_10m[i],gust:j.hourly.wind_gusts_10m[i]})):[],
+        daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
+      };
+      _windCache[coords]={data:result,fetchedAt:Date.now()};
+      if(_windBatch)_windBatch.ok++;
+      _windRelease();
+      return result;
+    }
+    if(!kind)kind=status?('HTTP '+status):'no current data in reply';
+    if(status===429&&attempt<1){
+      attempt++;
+      if(_windBatch)_windBatch.r429++;
+      _windRetrying++;
+      _windRelease();
+      await new Promise(r=>setTimeout(r,4000+Math.floor(Math.random()*2000)));
+      _windRetrying--;
+      continue;
+    }
+    _windNoteFail(coords,status?('HTTP '+status):kind,ms);
+    _windRelease();
     return null;
   }
 }
