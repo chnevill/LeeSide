@@ -1147,7 +1147,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v713';
+const APP_VERSION='v714';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -8348,7 +8348,6 @@ function showNoteView(nid,siteKey){
     document.getElementById('noteViewEditBtn').onclick=()=>{closeOverlay('noteViewOverlay');openEditSiteModal(curName);};
     const _siteTapEdit=()=>{closeOverlay('noteViewOverlay');openEditSiteModal(curName);const t=document.getElementById('esNote');if(t)t.focus();}; // v712: straight into the notes editor
     _tapToEdit(document.querySelector('#noteViewContent .note-view-body'),_siteTapEdit);
-    const _siteBody=document.querySelector('#noteViewContent .note-view-body');if(_siteBody)_siteBody.style.minHeight='56px';
     document.getElementById('noteViewEmergencyBtn').onclick=()=>{openEmergencyPage(curName);};
     document.getElementById('noteViewCloseBtn').onclick=()=>{closeOverlay('noteViewOverlay');returnFromSiteNote();};
     openOverlay('noteViewOverlay',()=>{closeOverlay('noteViewOverlay');returnFromSiteNote();});
