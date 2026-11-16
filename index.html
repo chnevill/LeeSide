@@ -723,7 +723,7 @@ body.theme-light .star-input button,body.theme-terra .star-input button{color:rg
       <button id="siteMapSearchBtn" type="button" style="width:40px;height:40px;flex-shrink:0;border-radius:50%;background:#fff;border:1px solid rgba(0,0,0,0.15);color:#1a2a3a;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,.4)">🔍</button>
     </div>
     <div id="siteMapSearchResults" style="display:none;position:absolute;top:62px;left:calc(50% + 18px);transform:translateX(-50%);z-index:1002;width:min(75%,300px);background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.4);max-height:240px;overflow-y:auto"></div>
-    <div id="siteMapReadingRow" style="position:absolute;bottom:14px;left:50%;transform:translateX(-50%);z-index:1000;display:flex;align-items:center;gap:8px;pointer-events:none"><div id="siteMapReading" style="display:none;pointer-events:auto;white-space:nowrap;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:20px;padding:6px 16px;font-size:13px;color:#4a6080;box-shadow:0 2px 8px rgba(0,0,0,.4)"></div><button id="siteMapPinEarthBtn" type="button" style="display:none;pointer-events:auto;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:20px;padding:6px 14px;font-size:13px;color:#4a6080;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;white-space:nowrap">🌍 Earth</button></div>
+    <div id="siteMapReadingRow" style="position:absolute;bottom:14px;left:50%;transform:translateX(-50%);z-index:1000;display:flex;flex-direction:column-reverse;align-items:center;gap:8px;pointer-events:none"><div id="siteMapReading" style="display:none;pointer-events:auto;white-space:nowrap;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:20px;padding:6px 16px;font-size:13px;color:#4a6080;box-shadow:0 2px 8px rgba(0,0,0,.4)"></div><div style="display:flex;gap:8px"><button id="siteMapPinEarthBtn" type="button" style="display:none;pointer-events:auto;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:20px;padding:6px 14px;font-size:13px;color:#4a6080;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;white-space:nowrap">🌍 Earth</button><button id="siteMapPinDirBtn" type="button" style="display:none;pointer-events:auto;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:20px;padding:6px 14px;font-size:13px;color:#4a6080;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;white-space:nowrap">🧭 Directions</button></div></div>
   </div>
   <div style="padding:8px 22px calc(env(safe-area-inset-bottom,0px) + 12px);flex-shrink:0;display:flex;justify-content:center">
     <button class="btn btn-ghost" id="siteMapCloseBtn" style="width:auto;min-width:160px;margin:0">Close</button>
@@ -1147,7 +1147,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v715';
+const APP_VERSION='v716';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7519,7 +7519,7 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   const map=L.map('siteMapContainer',{zoomControl:true});
   _siteMapInstance=map;
   _siteMapDropPin=null; // a fresh map starts with no dropped pin
-  {const _eb=document.getElementById('siteMapPinEarthBtn');if(_eb)_eb.style.display='none';}
+  {for(const id of ['siteMapPinEarthBtn','siteMapPinDirBtn']){const _eb=document.getElementById(id);if(_eb)_eb.style.display='none';}}
   const siteMapReadingEl=document.getElementById('siteMapReading');
   siteMapReadingEl.style.display='none';
   map.on('move',()=>{
@@ -7696,6 +7696,7 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
     siteMapReadingEl.style.display='block';
     siteMapReadingEl.textContent=`${w.lat.toFixed(6)}, ${w.lng.toFixed(6)}`;
     document.getElementById('siteMapPinEarthBtn').style.display='block'; // v715
+    document.getElementById('siteMapPinDirBtn').style.display='block'; // v716
     if(navigator.vibrate){try{navigator.vibrate(20);}catch(e){}}
   };
   // v715: Earth button next to the dropped pin's coordinates - same Google Earth link as the site detail page
@@ -7704,6 +7705,13 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
     if(!_siteMapDropPin)return;
     const ll=_siteMapDropPin.getLatLng();
     openExternalWithDataCheck(null,`https://earth.google.com/web/@${ll.lat.toFixed(6)},${ll.lng.toFixed(6)},100000a,10000d`,'Google Earth');
+  };
+  // v716: Directions button - Google Maps directions to the dropped pin's coordinates
+  document.getElementById('siteMapPinDirBtn').onclick=e=>{
+    e.stopPropagation();
+    if(!_siteMapDropPin)return;
+    const ll=_siteMapDropPin.getLatLng();
+    openExternalWithDataCheck(null,`https://www.google.com/maps/dir/?api=1&destination=${ll.lat.toFixed(6)},${ll.lng.toFixed(6)}`,'Google Maps');
   };
   // Tapping the readout copies the coordinates (works for a dropped pin and for a coordinate search).
   siteMapReadingEl.style.cursor='pointer';
@@ -7844,7 +7852,7 @@ document.addEventListener('visibilitychange',()=>{ // v681: back in the app afte
   if(document.querySelector('[data-windbarsite]'))refreshAllWindBars();
 });
 let _siteMapDropPin=null; // the pin dropped by a long press on the Sites map, if any
-function clearSiteMapDropPin(){if(_siteMapDropPin){_siteMapDropPin.remove();_siteMapDropPin=null;}const b=document.getElementById('siteMapPinEarthBtn');if(b)b.style.display='none';}
+function clearSiteMapDropPin(){if(_siteMapDropPin){_siteMapDropPin.remove();_siteMapDropPin=null;}for(const id of ['siteMapPinEarthBtn','siteMapPinDirBtn']){const b=document.getElementById(id);if(b)b.style.display='none';}}
 let _siteMapLastView=(()=>{ // {lat,lon,zoom} — remembers where you left the map, persisted per device (never synced), not reset by closing the app
   try{return JSON.parse(localStorage.getItem('leeside_mapLastView'));}catch(e){return null;}
 })();
