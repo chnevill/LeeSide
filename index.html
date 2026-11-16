@@ -726,7 +726,8 @@ body.theme-light .star-input button,body.theme-terra .star-input button{color:rg
     <button id="siteMapCloseBtn" type="button" aria-label="Close" style="position:absolute;top:14px;right:14px;z-index:1002;width:40px;height:40px;border-radius:50%;background:#fff;border:1px solid rgba(0,0,0,0.15);color:#1a2a3a;font-size:18px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.4)">✕</button>
     <div id="siteMapSearchResults" style="display:none;position:absolute;top:62px;left:50%;transform:translateX(-50%);z-index:1002;width:min(62%,280px);background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.4);max-height:240px;overflow-y:auto"></div>
     <div id="siteMapReadingRow" style="position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 50px);left:50%;transform:translateX(-50%);z-index:1000;display:flex;justify-content:center;pointer-events:none"><div id="siteMapReading" style="display:none;pointer-events:auto;white-space:nowrap;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:20px;padding:6px 16px;font-size:13px;color:#4a6080;box-shadow:0 2px 8px rgba(0,0,0,.4)"></div></div>
-    <div id="siteMapPinBtns" style="position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 100px);right:14px;z-index:1000;display:flex;flex-direction:column;align-items:flex-end;gap:8px;pointer-events:none"><button id="siteMapPinEarthBtn" type="button" style="display:none;pointer-events:auto;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:20px;padding:6px 14px;font-size:13px;color:#4a6080;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;white-space:nowrap">🌍 Earth</button><button id="siteMapPinDirBtn" type="button" style="display:none;pointer-events:auto;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:20px;padding:6px 14px;font-size:13px;color:#4a6080;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;white-space:nowrap">🧭 Directions</button></div>
+    <div id="siteMapPinEarthBtn" role="button" aria-label="Open in Google Earth" style="display:none;position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 150px);z-index:1000;align-items:center;gap:8px;cursor:pointer"><span style="display:flex;align-items:center;justify-content:center;height:32px;min-width:78px;padding:0 12px;box-sizing:border-box;border-radius:16px;font-size:13px;font-weight:700;background:#fff;color:#1a2a3a;border:1px solid rgba(0,0,0,0.15);box-shadow:0 2px 8px rgba(0,0,0,.4);white-space:nowrap">Earth</span><span style="display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#fff;color:#1a2a3a;font-size:18px;border:1px solid rgba(0,0,0,0.15);box-shadow:0 2px 8px rgba(0,0,0,.4)">🌍</span></div>
+    <div id="siteMapPinDirBtn" role="button" aria-label="Google Maps directions" style="display:none;position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 100px);z-index:1000;align-items:center;gap:8px;cursor:pointer"><span style="display:flex;align-items:center;justify-content:center;height:32px;min-width:78px;padding:0 12px;box-sizing:border-box;border-radius:16px;font-size:13px;font-weight:700;background:#fff;color:#1a2a3a;border:1px solid rgba(0,0,0,0.15);box-shadow:0 2px 8px rgba(0,0,0,.4);white-space:nowrap">Directions</span><span style="display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#fff;color:#1a2a3a;font-size:18px;border:1px solid rgba(0,0,0,0.15);box-shadow:0 2px 8px rgba(0,0,0,.4)">🧭</span></div>
   </div>
 </div>
 </div>
@@ -1147,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v717';
+const APP_VERSION='v718';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7695,8 +7696,8 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
     _dropAt=Date.now();
     siteMapReadingEl.style.display='block';
     siteMapReadingEl.textContent=`${w.lat.toFixed(6)}, ${w.lng.toFixed(6)}`;
-    document.getElementById('siteMapPinEarthBtn').style.display='block'; // v715
-    document.getElementById('siteMapPinDirBtn').style.display='block'; // v716
+    document.getElementById('siteMapPinEarthBtn').style.display='flex'; // v715
+    document.getElementById('siteMapPinDirBtn').style.display='flex'; // v716
     if(navigator.vibrate){try{navigator.vibrate(20);}catch(e){}}
   };
   // v715: Earth button next to the dropped pin's coordinates - same Google Earth link as the site detail page
