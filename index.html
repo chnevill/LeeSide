@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v721';
+const APP_VERSION='v722';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -2295,6 +2295,27 @@ function _skipWatchVerdict(w){
       log(changed.length?`skip-watch: this full sync changed ${changed.join(', ')} on this device`:'skip-watch: this full sync changed nothing on this device');
     }
   }catch(e){try{log('skip-watch: check failed ('+((e&&e.message)||e)+')');}catch(_){}}
+}
+// v722 — DON'T UPLOAD WHAT DRIVE ALREADY HOLDS. After a full sync has merged, this compares what this device is about to
+// upload with the file that was just downloaded from Drive (the "saved at" time ignored, key order ignored). If they are
+// identical the upload would change nothing, so it is skipped (about 376 KB saved on every such sync, and the Drive file's
+// checksum stays the same so other devices' skip checks keep working). ANY difference at all - or anything unclear -
+// means the normal upload runs exactly as before. Photos waiting to upload still upload. To switch off: SKIP_NOOP_UPLOAD=false.
+const SKIP_NOOP_UPLOAD=true;
+function _canonJson(v){
+  if(v===null||typeof v!=='object')return JSON.stringify(v);
+  if(Array.isArray(v))return '['+v.map(x=>_canonJson(x===undefined?null:x)).join(',')+']';
+  return '{'+Object.keys(v).filter(k=>v[k]!==undefined).sort().map(k=>JSON.stringify(k)+':'+_canonJson(v[k])).join(',')+'}';
+}
+function _driveAlreadyHolds(remote){
+  try{
+    if(!SKIP_NOOP_UPLOAD||_formatLocked||!remote||typeof remote!=='object')return false;
+    if(!dataSaverActive()&&Object.keys(collectLocalPhotos()).some(h=>!uploadedPhotoHashes.includes(h)))return false; // photos still to upload: run the normal upload
+    const mine=JSON.parse(JSON.stringify(getSnapshot()));
+    const theirs=JSON.parse(JSON.stringify(remote));
+    delete mine.ts;delete theirs.ts;
+    return _canonJson(mine)===_canonJson(theirs);
+  }catch(e){try{log('upload check failed, uploading as normal ('+((e&&e.message)||e)+')');}catch(_){}return false;}
 }
 // v663 — SKIP A SYNC THAT CAN'T CHANGE ANYTHING. Decided BEFORE anything is downloaded, and only when ALL of these hold:
 //  - the sync is an automatic background one (opening the app, coming back to it, regaining signal) - never one you
@@ -4000,8 +4021,22 @@ async function _syncFromDriveInner(retryCount=0,force=false,allowReauth=false,tr
         localSave();
         log('localStorage: IndexedDB (no quota limit)');
         _skipWatchVerdict(_skipW);
-        log('saving to drive');
-        if(activeFlights().length>0||remoteFlights.length>0){if((await saveToDrive(allowReauth,force))===false)_uploadFailed=true;}
+        if(activeFlights().length>0||remoteFlights.length>0){
+          if(_driveAlreadyHolds(JSON.parse(rawText))){ // a fresh parse of the downloaded text: the merge may have edited the earlier parsed copy in place
+            log(`upload SKIPPED: the file on Drive is already identical to what this device would upload. Saved about ${Math.round(byteLen(rawText)/1024)} KB of upload.`);
+            // Remember this as a completed sync so the background skip check keeps working - but only if Drive's checksum is
+            // the same before and after the download (otherwise another device wrote meanwhile and nothing is recorded).
+            try{
+              const _p2=await _peekDriveFile();
+              const _p1=_skipW&&_skipW.settled?_skipW.peek:null;
+              if(_p1&&_p1.md5&&_p2&&_p2.md5&&_p1.md5===_p2.md5&&driveFileId)syncMark={fileId:driveFileId,email:(userInfo&&userInfo.email)||null,md5:_p2.md5,fp:_syncFingerprint(),at:Date.now(),size:byteLen(rawText)};
+              else syncMark=null;
+            }catch(e){syncMark=null;}
+          }else{
+            log('saving to drive');
+            if((await saveToDrive(allowReauth,force))===false)_uploadFailed=true;
+          }
+        }
         log(`done in ${_ms(_syncT0)} ms`);
       }else{
         let _errBody='';try{_errBody=(await r.text()).replace(/\s+/g,' ').slice(0,300);}catch(e){}
