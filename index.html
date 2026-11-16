@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v720';
+const APP_VERSION='v721';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6715,13 +6715,13 @@ const WIND_CACHE_MS=15*60*1000;
 // Open-Meteo request; _windTried records that a site has been asked for at least once, so a
 // redraw that is not about the forecast (see renderSiteNotesCardList's noFetch) never has to ask again.
 let _windInflight={}, _windTried={};
-async function fetchSiteWind(coords,force){
+async function fetchSiteWind(coords,force,timeoutMs){
   if(!coords)return null;
   const cached=_windCache[coords];
   if(!force&&cached&&Date.now()-cached.fetchedAt<WIND_CACHE_MS)return cached.data;
   if(!force&&_windInflight[coords])return _windInflight[coords];
   _windTried[coords]=true;
-  const p=_fetchSiteWindNet(coords,!!force);
+  const p=_fetchSiteWindNet(coords,!!force,timeoutMs||10000);
   _windInflight[coords]=p;
   p.then(()=>{if(_windInflight[coords]===p)delete _windInflight[coords];});
   return p;
@@ -6740,7 +6740,7 @@ let _windActive=0;
 const _windQueue=[];
 let _windBatch=null;
 let _windRetrying=0; // sites currently waiting out a 429 pause - keeps the batch (and its one summary line) open
-function _windNewBatch(){return{t0:Date.now(),ok:0,fail:0,skipped:0,r429:0,kinds:{},logged:0};}
+function _windNewBatch(){return{t0:Date.now(),ok:0,fail:0,skipped:0,r429:0,kinds:{},logged:0,okMs:[]};}
 function _windPump(){
   while(_windActive<WIND_MAX_PARALLEL&&_windQueue.length){_windActive++;_windQueue.shift()();}
 }
@@ -6755,7 +6755,7 @@ function _windRelease(){
     const bt=_windBatch;_windBatch=null;
     try{
       const kinds=Object.keys(bt.kinds).map(k=>k+': '+bt.kinds[k]).join(', ');
-      log(`forecast batch: ${bt.ok} ok, ${bt.fail} failed${kinds?' ('+kinds+')':''}${bt.skipped?', '+bt.skipped+' not sent after repeated failures':''}${bt.r429?', '+bt.r429+' retried after 429':''}, took ${((Date.now()-bt.t0)/1000).toFixed(1)} s, app ${document.visibilityState}`);
+      log(`forecast batch: ${bt.ok} ok, ${bt.fail} failed${kinds?' ('+kinds+')':''}${bt.skipped?', '+bt.skipped+' not sent after repeated failures':''}${bt.r429?', '+bt.r429+' retried after 429':''}, took ${((Date.now()-bt.t0)/1000).toFixed(1)} s, app ${document.visibilityState}${bt.okMs.length?', replies took '+Math.min.apply(null,bt.okMs)+'-'+Math.max.apply(null,bt.okMs)+' ms':''}`);
     }catch(_){}
   }
 }
@@ -6764,7 +6764,7 @@ function _windNoteFail(coords,kind,ms){
   bt.fail++;bt.kinds[kind]=(bt.kinds[kind]||0)+1;
   if(bt.logged<5){bt.logged++;try{log(`forecast fetch failed for ${coords}: ${kind} (after ${ms} ms)`);}catch(_){}}
 }
-async function _fetchSiteWindNet(coords,force){
+async function _fetchSiteWindNet(coords,force,timeoutMs=10000){
   const[lat,lon]=coords.split(',').map(parseFloat);
     // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
     // the default can occasionally show gust below sustained speed, a
@@ -6793,7 +6793,7 @@ async function _fetchSiteWindNet(coords,force){
       bt.skipped++;_windRelease();return null;
     }
     const ac=new AbortController();
-    const tm=setTimeout(()=>ac.abort(),10000);
+    const tm=setTimeout(()=>ac.abort(),timeoutMs);
     const t0=Date.now();
     let status=0,j=null,kind='';
     try{
@@ -6801,7 +6801,7 @@ async function _fetchSiteWindNet(coords,force){
       status=r.status;
       if(r.ok){const txt=await r.text();try{recordForecastBytes(byteLen(txt));}catch(_){} /* v680 data-usage counter */ j=JSON.parse(txt);}
     }catch(e){
-      kind=(e&&e.name==='AbortError')?'timed out (10 s)':'network error ('+((e&&e.message)||'unknown')+')';
+      kind=(e&&e.name==='AbortError')?('timed out ('+Math.round(timeoutMs/1000)+' s)'):'network error ('+((e&&e.message)||'unknown')+')';
     }
     clearTimeout(tm);
     const ms=Date.now()-t0;
@@ -6816,7 +6816,7 @@ async function _fetchSiteWindNet(coords,force){
         daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
       };
       _windCache[coords]={data:result,fetchedAt:Date.now()};
-      if(_windBatch)_windBatch.ok++;
+      if(_windBatch){_windBatch.ok++;_windBatch.okMs.push(ms);}
       _windRelease();
       return result;
     }
@@ -7064,6 +7064,7 @@ function refreshAllWindBars(){
   document.querySelectorAll('[data-windbarsite]').forEach(el=>{
     const site=el.dataset.windbarsite;
     const data=_windDataCache[site];
+    if(data==null)return; // v721: a card still loading/retrying shows its status text, not 'No forecast data'
     renderOneWindBar(el,data);
   });
 }
@@ -8038,6 +8039,57 @@ function _scheduleSiteLocRetry(){
 // asked for at all (e.g. a brand-new site or changed coordinates). The forecast is refreshed
 // by the things that are actually about it: opening the Sites tab, returning to the app,
 // pulling down, and the wind-search filter.
+// v721: a forecast that fails is retried automatically (5 s, 10 s, 20 s, then every 30 s) for as long
+// as the Sites tab is open and the app is visible, and each card says what it is doing.
+// Later tries wait up to 25 s for a reply (the first try waits 10 s) and the log records how long replies take.
+const _windLoop={};
+const WIND_RETRY_DELAYS=[5000,10000,20000];
+function _windSleep(ms){return new Promise(r=>setTimeout(r,ms));}
+function _windUuidsFor(coords){return Object.keys(siteCoordsByUuid).filter(u=>siteCoordsByUuid[u]===coords);}
+function _sitesVisibleNow(){return document.visibilityState==='visible'&&currentTab==='sites';}
+function _siteWindState(uuid,kind,n){
+  const listEl=document.getElementById('siteNotesCardList');if(!listEl)return;
+  const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
+  const bar=listEl.querySelector(`[data-windbarsite="${uuid}"] [data-windscroll]`);
+  const retry=kind==='retry';
+  if(slot)slot.innerHTML=`<span style="color:var(--text3)">${retry?'Retrying…':'Loading…'}</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>`;
+  if(bar)bar.innerHTML=`<div style="color:var(--text3);font-size:12px;padding:4px 0">${retry?('The forecast service isn\'t responding. Trying again'+(n>1?' (try '+n+')':'')+'…'):'Loading forecast…'}</div>`;
+}
+function _paintSiteWind(uuid,w){
+  const listEl=document.getElementById('siteNotesCardList');if(!listEl)return;
+  const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
+  if(slot){
+    if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>';} // v701: the Windy link stays visible without a forecast
+    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>`;}
+  }
+  const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
+  if(accentEl)accentEl.style.background=w?windSpeedToColor(w.speed):'transparent';
+  _windDataCache[uuid]=w;
+  const barContainer=listEl.querySelector(`[data-windbarsite="${uuid}"]`);
+  if(barContainer)renderOneWindBar(barContainer,w);
+}
+function _ensureWindRetry(coords){
+  if(!coords||_windLoop[coords])return;
+  const st=_windLoop[coords]={n:0};
+  (async()=>{
+    while(_windLoop[coords]===st){
+      _windUuidsFor(coords).forEach(u=>_siteWindState(u,'retry',st.n+1));
+      await _windSleep(st.n<WIND_RETRY_DELAYS.length?WIND_RETRY_DELAYS[st.n]:30000);
+      while(_windLoop[coords]===st&&!_sitesVisibleNow())await _windSleep(1500);
+      if(_windLoop[coords]!==st)return;
+      if(!_windUuidsFor(coords).length){delete _windLoop[coords];return;} // the site is gone
+      st.n++;
+      const w=await fetchSiteWind(coords,false,st.n>=2?25000:10000);
+      if(_windLoop[coords]!==st)return;
+      if(w){
+        delete _windLoop[coords];
+        _windUuidsFor(coords).forEach(u=>_paintSiteWind(u,w));
+        try{log(`forecast retry worked for ${coords} on try ${st.n}`);}catch(_){}
+        return;
+      }
+    }
+  })();
+}
 async function renderSiteNotesCardList(force,q='',noFetch=false){
   q=q.trim();
   const listEl=document.getElementById('siteNotesCardList');
@@ -8109,25 +8161,22 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
   withDist.forEach(({uuid})=>{
     const coords=siteCoordsByUuid[uuid];
     if(!coords)return;
-    const paintWind=w=>{
-      const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
-      if(slot){
-        if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>';} // v701: the Windy link stays visible without a forecast
-        else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>`;}
-      }
-      const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
-      if(accentEl)accentEl.style.background=w?windSpeedToColor(w.speed):'transparent';
-      _windDataCache[uuid]=w;
-      const barContainer=listEl.querySelector(`[data-windbarsite="${uuid}"]`);
-      if(barContainer)renderOneWindBar(barContainer,w);
+    const showResult=w=>{
+      if(w){delete _windLoop[coords];_paintSiteWind(uuid,w);}
+      else _ensureWindRetry(coords); // v721: no answer - say so on the card and keep trying
     };
     if(noFetch){
       const c=_windCache[coords];
-      if(c){paintWind(c.data);return;}                       // already have it - just show it
-      if(_windInflight[coords]){_windInflight[coords].then(paintWind);return;} // one is on its way - wait for that
-      if(_windTried[coords]){paintWind(_windDataCache[uuid]||null);return;}    // already asked and got nothing - don't ask again from here
+      if(c){_paintSiteWind(uuid,c.data);return;}                       // already have it - just show it
+      if(_windInflight[coords]){_siteWindState(uuid,'loading');_windInflight[coords].then(showResult);return;} // one is on its way - wait for that
+      if(_windLoop[coords]){_siteWindState(uuid,'retry',_windLoop[coords].n+1);return;} // already retrying
+      if(_windTried[coords]){showResult(_windDataCache[uuid]||null);return;}
     }
-    fetchSiteWind(coords,force).then(paintWind);
+    const _c=_windCache[coords];
+    if(force||!(_c&&Date.now()-_c.fetchedAt<WIND_CACHE_MS)){
+      if(_windLoop[coords])_siteWindState(uuid,'retry',_windLoop[coords].n+1);else _siteWindState(uuid,'loading');
+    }
+    fetchSiteWind(coords,force).then(showResult);
   });
 
   // Wire up toggle taps (delegated once per render)
