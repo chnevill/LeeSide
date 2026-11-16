@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v719';
+const APP_VERSION='v720';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7517,7 +7517,7 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
     container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text3);font-size:14px;text-align:center;padding:24px">No sites have coordinates yet — add some from a site\'s Edit Site screen.</div>';
     return;
   }
-  const map=L.map('siteMapContainer',{zoomControl:true});
+  const map=L.map('siteMapContainer',{zoomControl:true,inertiaDeceleration:INERTIA_DECEL,inertiaMaxSpeed:INERTIA_MAX}); // v720: longer flick glide on the Sites map (Leaflet defaults are 3000 and 1500)
   _siteMapInstance=map;
   _siteMapDropPin=null; // a fresh map starts with no dropped pin
   {for(const id of ['siteMapPinEarthBtn','siteMapPinDirBtn']){const _eb=document.getElementById(id);if(_eb)_eb.style.display='none';}}
@@ -7852,6 +7852,7 @@ document.addEventListener('visibilitychange',()=>{ // v681: back in the app afte
   _windScrollIsFresh=true;
   if(document.querySelector('[data-windbarsite]'))refreshAllWindBars();
 });
+const INERTIA_DECEL=1800,INERTIA_MAX=2500; // v720: Sites-map flick momentum (px/s^2, px/s)
 let _siteMapDropPin=null; // the pin dropped by a long press on the Sites map, if any
 function clearSiteMapDropPin(){if(_siteMapDropPin){_siteMapDropPin.remove();_siteMapDropPin=null;}for(const id of ['siteMapPinEarthBtn','siteMapPinDirBtn']){const b=document.getElementById(id);if(b)b.style.display='none';}}
 let _siteMapLastView=(()=>{ // {lat,lon,zoom} — remembers where you left the map, persisted per device (never synced), not reset by closing the app
