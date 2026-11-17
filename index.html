@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v723';
+const APP_VERSION='v724';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6574,12 +6574,27 @@ function _logLocFail(what){
   _locLogAt=Date.now();
   try{logAuthEvent('location lookup failed: '+what+(document.hidden?' (app hidden)':''));}catch(e){}
 }
+// v724: DIAGNOSTIC ONLY (changes no behavior). Records what the phone hands the app on each location lookup - how accurate,
+// how old the fix is, and the Data Saver state - in the Sign-in log (at most one entry per 5 s, coordinates rounded to ~100 m),
+// to find out why the blue dot on the Sites map stays at an old place while Data Saver is on.
+let _locOkAt=0;
+function _logLocOk(pos,force){
+  try{
+    if(Date.now()-_locOkAt<5000)return;
+    _locOkAt=Date.now();
+    const c=navigator.connection||{};
+    logAuthEvent('location fix: '+pos.coords.latitude.toFixed(3)+','+pos.coords.longitude.toFixed(3)
+      +', accuracy '+Math.round(pos.coords.accuracy)+' m, fix age '+Math.round((Date.now()-pos.timestamp)/1000)+' s'
+      +', asked '+(force?'fresh':'cached ok')+', Data Saver setting '+(settings.wifiOnly?'on':'off')
+      +', Data Saver active '+(dataSaverActive()?'yes':'no')+', connection '+(c.type||'?')+(document.hidden?' (app hidden)':''));
+  }catch(e){}
+}
 function getCurrentLocation(force){
   let answered=false;
   const geoPromise=new Promise(resolve=>{
     if(!navigator.geolocation){_logLocFail('no geolocation support');resolve(null);return;}
     navigator.geolocation.getCurrentPosition(
-      pos=>{answered=true;resolve({lat:pos.coords.latitude,lon:pos.coords.longitude});},
+      pos=>{answered=true;_logLocOk(pos,force);resolve({lat:pos.coords.latitude,lon:pos.coords.longitude});},
       err=>{answered=true;_logLocFail('error code '+(err&&err.code)+' ('+({1:'permission denied',2:'position unavailable',3:'timed out'}[err&&err.code]||'unknown')+')'+(err&&err.message?': '+err.message:''));resolve(null);},
       {timeout:8000,maximumAge:force?0:300000}
     );
