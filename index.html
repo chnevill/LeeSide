@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v725';
+const APP_VERSION='v726';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7497,6 +7497,8 @@ function kk7AttachFilter(wrapperId,getLayers,lift=0){
   refresh();
   return {refresh};
 }
+// v726: Topo tiles stop at zoom 17 (beyond that the server returns "max zoom layer = 17" placeholder tiles), so the map can't zoom past it on Topo
+function layerMaxZoom(key){return key==='topo'?17:19;}
 async function openSiteMapView(focusSite,returnToNote,focusPoint){
   if(dataSaverActive()){
     if(!await showConfirm(dataSaverConfirmMsg('Maps'),'Open anyway','warn'))return;
@@ -7606,7 +7608,8 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
   // without having chosen that themselves first.
   const savedMapLayer=localStorage.getItem('leeside_mapLayer');
   let _activeLayerKey=(savedMapLayer&&TILE_LAYERS[savedMapLayer])?savedMapLayer:themeDefault;
-  let _activeLayer=L.tileLayer(TILE_LAYERS[_activeLayerKey].url,{attribution:TILE_LAYERS[_activeLayerKey].attr,maxZoom:19,updateWhenIdle:false}).addTo(map);
+  let _activeLayer=L.tileLayer(TILE_LAYERS[_activeLayerKey].url,{attribution:TILE_LAYERS[_activeLayerKey].attr,maxZoom:layerMaxZoom(_activeLayerKey),updateWhenIdle:false}).addTo(map);
+  map.setMaxZoom(layerMaxZoom(_activeLayerKey));
   wireTileDiagnostics(_activeLayer);
 
   // Layer picker button (bottom-left of map, above zoom controls)
@@ -7682,7 +7685,8 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
       map.removeLayer(_activeLayer);
       _activeLayerKey=key;
       localStorage.setItem('leeside_mapLayer',key);
-      _activeLayer=L.tileLayer(cfg.url,{attribution:cfg.attr,maxZoom:19,updateWhenIdle:false}).addTo(map);
+      _activeLayer=L.tileLayer(cfg.url,{attribution:cfg.attr,maxZoom:layerMaxZoom(key),updateWhenIdle:false}).addTo(map);
+      map.setMaxZoom(layerMaxZoom(key)); // also zooms out a little if the map is zoomed in further than this layer goes
       wireTileDiagnostics(_activeLayer);
       if(_skywaysLayer)_skywaysLayer.bringToFront(); // the new base layer just got added on top, which would otherwise bury Skyways even though it's still toggled on
       if(_thermalsLayer)_thermalsLayer.bringToFront();
@@ -10530,7 +10534,8 @@ async function openCoordPicker(targetFieldId='esCoords'){
   };
   const savedMapLayer=localStorage.getItem('leeside_mapLayer');
   let _activeLayerKey=(savedMapLayer&&TILE_LAYERS[savedMapLayer])?savedMapLayer:(isIOS?'standard':'topo'); // same iPhone-specific default as the main map, for the same real tile-reliability reason — only used if nothing's been picked before
-  let _activeLayer=L.tileLayer(TILE_LAYERS[_activeLayerKey].url,{attribution:TILE_LAYERS[_activeLayerKey].attr,maxZoom:19}).addTo(map);
+  let _activeLayer=L.tileLayer(TILE_LAYERS[_activeLayerKey].url,{attribution:TILE_LAYERS[_activeLayerKey].attr,maxZoom:layerMaxZoom(_activeLayerKey)}).addTo(map);
+  map.setMaxZoom(layerMaxZoom(_activeLayerKey));
 
   ['coordPickerLayerBtn','coordPickerLayerMenu','coordPickerSkywaysBtn','coordPickerThermalsBtn'].forEach(id=>{const el=document.getElementById(id);if(el)el.remove();});
   const layerBtn=document.createElement('button');
@@ -10601,7 +10606,8 @@ async function openCoordPicker(targetFieldId='esCoords'){
       map.removeLayer(_activeLayer);
       _activeLayerKey=key;
       localStorage.setItem('leeside_mapLayer',key);
-      _activeLayer=L.tileLayer(cfg.url,{attribution:cfg.attr,maxZoom:19}).addTo(map);
+      _activeLayer=L.tileLayer(cfg.url,{attribution:cfg.attr,maxZoom:layerMaxZoom(key)}).addTo(map);
+      map.setMaxZoom(layerMaxZoom(key));
       if(_skywaysLayer)_skywaysLayer.bringToFront();
       if(_thermalsLayer)_thermalsLayer.bringToFront();
       layerMenu.querySelectorAll('button').forEach(b=>b.style.color=b.dataset.layerKey===key?'#c47800':'#1a2a3a');
