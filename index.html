@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v726';
+const APP_VERSION='v727';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6726,6 +6726,30 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
 }
 let _windCache={}; // site -> {data, fetchedAt}
 const WIND_CACHE_MS=15*60*1000;
+// v727: the last good forecast for each site is also kept on this device (never synced to Drive) for up to
+// an hour. When a fresh forecast can't be fetched, the card shows the saved one with "updated N min ago"
+// and keeps trying in the background; as soon as a fresh one arrives it replaces the saved one.
+const WIND_STALE_MS=60*60*1000;
+let _windSaved=(()=>{try{const o=JSON.parse(localStorage.getItem('leeside_windSaved'));return(o&&typeof o==='object')?o:{};}catch(e){return {};}})();
+let _windSaveTimer=null;
+function _windSavedFor(coords){
+  const s=_windSaved[coords];
+  if(!s||!s.data||s.unit!==windUnitParam())return null; // a forecast saved in a different unit is never shown
+  const age=Date.now()-s.t;
+  return(age>=0&&age<WIND_STALE_MS)?{data:s.data,age}:null;
+}
+function _windSaveSoon(){
+  if(_windSaveTimer)return;
+  _windSaveTimer=setTimeout(()=>{
+    _windSaveTimer=null;
+    try{
+      const now=Date.now();
+      for(const k of Object.keys(_windSaved)){if(now-_windSaved[k].t>=WIND_STALE_MS)delete _windSaved[k];}
+      localStorage.setItem('leeside_windSaved',JSON.stringify(_windSaved));
+    }catch(e){}
+  },3000);
+}
+function _windAgeText(ms){const m=Math.max(1,Math.round(ms/60000));return m<60?m+' min ago':'1 hr ago';}
 // v704: _windInflight lets two callers asking for the same site at the same time share ONE
 // Open-Meteo request; _windTried records that a site has been asked for at least once, so a
 // redraw that is not about the forecast (see renderSiteNotesCardList's noFetch) never has to ask again.
@@ -6831,6 +6855,7 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=10000){
         daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
       };
       _windCache[coords]={data:result,fetchedAt:Date.now()};
+      _windSaved[coords]={data:result,t:Date.now(),unit:windUnitParam()};_windSaveSoon(); // v727
       if(_windBatch){_windBatch.ok++;_windBatch.okMs.push(ms);}
       _windRelease();
       return result;
@@ -8176,12 +8201,12 @@ function _siteWindState(uuid,kind,n){
   if(slot)slot.innerHTML=`<span style="color:var(--text3)">${retry?'Retrying…':'Loading…'}</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>`;
   if(bar)bar.innerHTML=`<div style="color:var(--text3);font-size:12px;padding:4px 0">${retry?('The forecast service isn\'t responding. Trying again'+(n>1?' (try '+n+')':'')+'…'):'Loading forecast…'}</div>`;
 }
-function _paintSiteWind(uuid,w){
+function _paintSiteWind(uuid,w,staleMs){
   const listEl=document.getElementById('siteNotesCardList');if(!listEl)return;
   const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
   if(slot){
     if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>';} // v701: the Windy link stays visible without a forecast
-    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>`;}
+    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>${staleMs?`<span style="display:block;color:var(--text3);font-size:12px">updated ${_windAgeText(staleMs)}</span>`:''}`;}
   }
   const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
   if(accentEl)accentEl.style.background=w?windSpeedToColor(w.speed):'transparent';
@@ -8194,7 +8219,7 @@ function _ensureWindRetry(coords){
   const st=_windLoop[coords]={n:0};
   (async()=>{
     while(_windLoop[coords]===st){
-      _windUuidsFor(coords).forEach(u=>_siteWindState(u,'retry',st.n+1));
+      if(!_windSavedFor(coords))_windUuidsFor(coords).forEach(u=>_siteWindState(u,'retry',st.n+1)); // v727: a saved forecast stays on the card while we keep trying
       await _windSleep(st.n<WIND_RETRY_DELAYS.length?WIND_RETRY_DELAYS[st.n]:30000);
       while(_windLoop[coords]===st&&!_sitesVisibleNow())await _windSleep(1500);
       if(_windLoop[coords]!==st)return;
@@ -8284,7 +8309,11 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
     if(!coords)return;
     const showResult=w=>{
       if(w){delete _windLoop[coords];_paintSiteWind(uuid,w);}
-      else _ensureWindRetry(coords); // v721: no answer - say so on the card and keep trying
+      else{
+        const sv=_windSavedFor(coords);
+        if(sv)_paintSiteWind(uuid,sv.data,sv.age); // v727: no fresh forecast - show the saved one, labelled with its age
+        _ensureWindRetry(coords); // v721: keep trying
+      }
     };
     if(noFetch){
       const c=_windCache[coords];
@@ -8295,7 +8324,9 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
     }
     const _c=_windCache[coords];
     if(force||!(_c&&Date.now()-_c.fetchedAt<WIND_CACHE_MS)){
-      if(_windLoop[coords])_siteWindState(uuid,'retry',_windLoop[coords].n+1);else _siteWindState(uuid,'loading');
+      const sv=_windSavedFor(coords);
+      if(sv)_paintSiteWind(uuid,sv.data,sv.age); // v727: show the saved forecast while the fresh one loads
+      else if(_windLoop[coords])_siteWindState(uuid,'retry',_windLoop[coords].n+1);else _siteWindState(uuid,'loading');
     }
     fetchSiteWind(coords,force).then(showResult);
   });
