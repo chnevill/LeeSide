@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v727';
+const APP_VERSION='v728';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6771,8 +6771,8 @@ async function fetchSiteWind(coords,force,timeoutMs){
 // (11/12). A request that takes longer than 10 s is now really cancelled (AbortController),
 // so it can't keep holding a connection. A 429 is retried once after a pause; a timeout or
 // network failure is NOT retried automatically (retries are what stacked up before). If the
-// first few requests of a batch all fail with no success, the rest of that batch is not sent
-// (the server is clearly not answering) - a pull-down always tries again. Every failure, and
+// first few requests of a batch all fail, every other site is still asked (v728 removed the old
+// "stop the rest of the batch" rule). Every failure, and
 // a one-line summary of each batch, is written to the debug log.
 const WIND_MAX_PARALLEL=4;
 let _windActive=0;
@@ -6826,11 +6826,6 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=10000){
   let attempt=0;
   while(true){
     await _windSlot();
-    const bt=_windBatch;
-    // Several failures in a row and nothing has worked yet in this batch: don't send the rest.
-    if(!force&&bt&&bt.ok===0&&bt.fail>=WIND_MAX_PARALLEL){
-      bt.skipped++;_windRelease();return null;
-    }
     const ac=new AbortController();
     const tm=setTimeout(()=>ac.abort(),timeoutMs);
     const t0=Date.now();
@@ -8185,21 +8180,15 @@ function _scheduleSiteLocRetry(){
 // asked for at all (e.g. a brand-new site or changed coordinates). The forecast is refreshed
 // by the things that are actually about it: opening the Sites tab, returning to the app,
 // pulling down, and the wind-search filter.
-// v721: a forecast that fails is retried automatically (5 s, 10 s, 20 s, then every 30 s) for as long
-// as the Sites tab is open and the app is visible, and each card says what it is doing.
-// Later tries wait up to 25 s for a reply (the first try waits 10 s) and the log records how long replies take.
-const _windLoop={};
-const WIND_RETRY_DELAYS=[5000,10000,20000];
-function _windSleep(ms){return new Promise(r=>setTimeout(r,ms));}
+// v728: no automatic retry. A site whose forecast fails shows "No data" (or its saved forecast, if under an hour old)
+// and is asked again by the things above: opening Sites, returning to the app, pulling down.
 function _windUuidsFor(coords){return Object.keys(siteCoordsByUuid).filter(u=>siteCoordsByUuid[u]===coords);}
-function _sitesVisibleNow(){return document.visibilityState==='visible'&&currentTab==='sites';}
-function _siteWindState(uuid,kind,n){
+function _siteWindState(uuid){
   const listEl=document.getElementById('siteNotesCardList');if(!listEl)return;
   const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
   const bar=listEl.querySelector(`[data-windbarsite="${uuid}"] [data-windscroll]`);
-  const retry=kind==='retry';
-  if(slot)slot.innerHTML=`<span style="color:var(--text3)">${retry?'Retrying…':'Loading…'}</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>`;
-  if(bar)bar.innerHTML=`<div style="color:var(--text3);font-size:12px;padding:4px 0">${retry?('The forecast service isn\'t responding. Trying again'+(n>1?' (try '+n+')':'')+'…'):'Loading forecast…'}</div>`;
+  if(slot)slot.innerHTML=`<span style="color:var(--text3)">Loading…</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>`;
+  if(bar)bar.innerHTML=`<div style="color:var(--text3);font-size:12px;padding:4px 0">Loading forecast…</div>`;
 }
 function _paintSiteWind(uuid,w,staleMs){
   const listEl=document.getElementById('siteNotesCardList');if(!listEl)return;
@@ -8213,28 +8202,6 @@ function _paintSiteWind(uuid,w,staleMs){
   _windDataCache[uuid]=w;
   const barContainer=listEl.querySelector(`[data-windbarsite="${uuid}"]`);
   if(barContainer)renderOneWindBar(barContainer,w);
-}
-function _ensureWindRetry(coords){
-  if(!coords||_windLoop[coords])return;
-  const st=_windLoop[coords]={n:0};
-  (async()=>{
-    while(_windLoop[coords]===st){
-      if(!_windSavedFor(coords))_windUuidsFor(coords).forEach(u=>_siteWindState(u,'retry',st.n+1)); // v727: a saved forecast stays on the card while we keep trying
-      await _windSleep(st.n<WIND_RETRY_DELAYS.length?WIND_RETRY_DELAYS[st.n]:30000);
-      while(_windLoop[coords]===st&&!_sitesVisibleNow())await _windSleep(1500);
-      if(_windLoop[coords]!==st)return;
-      if(!_windUuidsFor(coords).length){delete _windLoop[coords];return;} // the site is gone
-      st.n++;
-      const w=await fetchSiteWind(coords,false,st.n>=2?25000:10000);
-      if(_windLoop[coords]!==st)return;
-      if(w){
-        delete _windLoop[coords];
-        _windUuidsFor(coords).forEach(u=>_paintSiteWind(u,w));
-        try{log(`forecast retry worked for ${coords} on try ${st.n}`);}catch(_){}
-        return;
-      }
-    }
-  })();
 }
 async function renderSiteNotesCardList(force,q='',noFetch=false){
   q=q.trim();
@@ -8308,25 +8275,24 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
     const coords=siteCoordsByUuid[uuid];
     if(!coords)return;
     const showResult=w=>{
-      if(w){delete _windLoop[coords];_paintSiteWind(uuid,w);}
+      if(w){_paintSiteWind(uuid,w);}
       else{
         const sv=_windSavedFor(coords);
         if(sv)_paintSiteWind(uuid,sv.data,sv.age); // v727: no fresh forecast - show the saved one, labelled with its age
-        _ensureWindRetry(coords); // v721: keep trying
+        else _paintSiteWind(uuid,null); // v728: nothing to show - "No data", and the Windy link
       }
     };
     if(noFetch){
       const c=_windCache[coords];
       if(c){_paintSiteWind(uuid,c.data);return;}                       // already have it - just show it
-      if(_windInflight[coords]){_siteWindState(uuid,'loading');_windInflight[coords].then(showResult);return;} // one is on its way - wait for that
-      if(_windLoop[coords]){_siteWindState(uuid,'retry',_windLoop[coords].n+1);return;} // already retrying
+      if(_windInflight[coords]){_siteWindState(uuid);_windInflight[coords].then(showResult);return;} // one is on its way - wait for that
       if(_windTried[coords]){showResult(_windDataCache[uuid]||null);return;}
     }
     const _c=_windCache[coords];
     if(force||!(_c&&Date.now()-_c.fetchedAt<WIND_CACHE_MS)){
       const sv=_windSavedFor(coords);
       if(sv)_paintSiteWind(uuid,sv.data,sv.age); // v727: show the saved forecast while the fresh one loads
-      else if(_windLoop[coords])_siteWindState(uuid,'retry',_windLoop[coords].n+1);else _siteWindState(uuid,'loading');
+      else _siteWindState(uuid);
     }
     fetchSiteWind(coords,force).then(showResult);
   });
