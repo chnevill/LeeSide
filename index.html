@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v729';
+const APP_VERSION='v730';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7861,67 +7861,18 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
 }
 
 
-// v725: "you are here" dot that follows you while the Sites map is open, with an accuracy ring and a
-// direction arrow. GPS is only on while the map is open and the app is in front; it is switched off
+// v725: "you are here" dot that follows you while the Sites map is open, with an accuracy ring (v730: no
+// direction arrow any more). GPS is only on while the map is open and the app is in front; it is switched off
 // when the map closes or the app goes to the background.
 let _meWatchId=null,_meMarker=null,_meRing=null,_meStats=null;
-let _meGpsHeading=null,_meGpsHeadingAt=0,_meCompassHeading=null,_meCompassListening=false,_meArrowAt=0,_meArrowDeg=null;
-const ME_ICON_HTML='<div class="me-arrow" style="position:absolute;left:0;top:0;width:44px;height:44px;display:none;pointer-events:none"><div style="position:absolute;left:14px;top:-1px;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:14px solid #4a90e2;filter:drop-shadow(0 0 1px #fff)"></div></div>'
-  +'<div style="position:absolute;left:15px;top:15px;width:14px;height:14px;border-radius:50%;background:#4a90e2;border:2px solid #fff;box-shadow:0 0 0 3px rgba(74,144,226,0.4)"></div>';
+const ME_ICON_HTML='<div style="position:absolute;left:15px;top:15px;width:14px;height:14px;border-radius:50%;background:#4a90e2;border:2px solid #fff;box-shadow:0 0 0 3px rgba(74,144,226,0.4)"></div>';
 function _meMapOpen(){const ov=document.getElementById('siteMapOverlay');return !!(_siteMapInstance&&ov&&ov.classList.contains('open'));}
-function _meSetArrow(deg){
-  if(deg==null||!_meMarker)return;
-  const el=_meMarker.getElement&&_meMarker.getElement();
-  const a=el&&el.querySelector('.me-arrow');
-  if(!a)return;
-  _meArrowDeg=deg;
-  a.style.display='block';
-  a.style.transform='rotate('+deg.toFixed(0)+'deg)';
-}
-function _meChooseHeading(){
-  const gpsFresh=_meGpsHeading!=null&&Date.now()-_meGpsHeadingAt<6000;
-  _meSetArrow(gpsFresh?_meGpsHeading:_meCompassHeading);
-}
-function _meOnOrientation(e){
-  try{
-    let h=null;
-    if(typeof e.webkitCompassHeading==='number')h=e.webkitCompassHeading;
-    else if(e.alpha!=null&&e.beta!=null&&e.gamma!=null&&(e.absolute||e.type==='deviceorientationabsolute')){
-      const d=Math.PI/180,z=e.alpha*d,x=e.beta*d,y=e.gamma*d;
-      const cA=Math.cos(z),sA=Math.sin(z),cB=Math.cos(x),sB=Math.sin(x),cG=Math.cos(y),sG=Math.sin(y);
-      const rA=-cA*sG-sA*sB*cG,rB=-sA*sG+cA*sB*cG;
-      h=Math.atan2(rA,rB)/d;if(h<0)h+=360;
-    }
-    if(h==null||!isFinite(h))return;
-    const so=(screen.orientation&&screen.orientation.angle)||0;
-    h=(h+so)%360;
-    // smooth: move 30% of the way round the shortest arc each time
-    if(_meCompassHeading==null)_meCompassHeading=h;
-    else{let dlt=((h-_meCompassHeading+540)%360)-180;_meCompassHeading=(_meCompassHeading+dlt*0.3+360)%360;}
-    const now=Date.now();
-    if(now-_meArrowAt<120)return;
-    _meArrowAt=now;
-    _meChooseHeading();
-  }catch(err){}
-}
-function _meListenCompass(on){
-  if(on&&!_meCompassListening){
-    window.addEventListener('deviceorientationabsolute',_meOnOrientation);
-    if(!('ondeviceorientationabsolute' in window))window.addEventListener('deviceorientation',_meOnOrientation);
-    _meCompassListening=true;
-  }else if(!on&&_meCompassListening){
-    window.removeEventListener('deviceorientationabsolute',_meOnOrientation);
-    window.removeEventListener('deviceorientation',_meOnOrientation);
-    _meCompassListening=false;
-  }
-}
 function _meUpdate(lat,lon,acc){
   if(!_meMapOpen())return;
   const ll=[lat,lon];
   if(!_meMarker){
     const icon=L.divIcon({html:ME_ICON_HTML,className:'',iconSize:[44,44],iconAnchor:[22,22]});
     _meMarker=L.marker(ll,{icon,keyboard:false,zIndexOffset:1000}).addTo(_siteMapInstance).bindTooltip('You are here',{direction:'top',offset:[0,-12]});
-    if(_meArrowDeg!=null)_meSetArrow(_meArrowDeg);
   }else _meMarker.setLatLng(ll);
   if(acc>0){
     if(!_meRing)_meRing=L.circle(ll,{radius:acc,color:'#4a90e2',weight:1,opacity:0.35,fillColor:'#4a90e2',fillOpacity:0.12,interactive:false}).addTo(_siteMapInstance);
@@ -7934,9 +7885,6 @@ function _meOnPos(pos){
   const c=pos.coords;
   if(_meStats){_meStats.n++;_meStats.acc=Math.round(c.accuracy);}
   _meUpdate(c.latitude,c.longitude,c.accuracy);
-  if(typeof c.heading==='number'&&isFinite(c.heading)&&typeof c.speed==='number'&&c.speed>=1){
-    _meGpsHeading=c.heading;_meGpsHeadingAt=Date.now();_meChooseHeading();
-  }else _meChooseHeading();
 }
 function startMyLocation(){
   if(!_meMapOpen()||document.hidden||_meWatchId!=null||!navigator.geolocation)return;
@@ -7945,7 +7893,6 @@ function startMyLocation(){
   _meStats={n:0,acc:null,t0:Date.now(),err:null};
   try{
     _meWatchId=navigator.geolocation.watchPosition(_meOnPos,err=>{if(_meStats&&!_meStats.err)_meStats.err=err&&err.code;},{enableHighAccuracy:true,maximumAge:5000,timeout:20000});
-    _meListenCompass(true);
     try{logAuthEvent('map location follow started, Data Saver setting '+(settings.wifiOnly?'on':'off')+', Data Saver active '+(dataSaverActive()?'yes':'no'));}catch(e){}
   }catch(e){_meWatchId=null;}
 }
@@ -7955,11 +7902,9 @@ function stopMyLocation(why){
     _meWatchId=null;
     try{const st=_meStats||{};logAuthEvent('map location follow stopped ('+why+'): '+(st.n||0)+' updates over '+Math.round((Date.now()-(st.t0||Date.now()))/1000)+' s, last accuracy '+(st.acc==null?'none':st.acc+' m')+(st.err?', error code '+st.err:''));}catch(e){}
   }
-  _meListenCompass(false);
   if(why==='map rebuilt'||why==='map closed'||why==='map not open'){
     if(_meMarker){try{_meMarker.remove();}catch(e){}_meMarker=null;}
     if(_meRing){try{_meRing.remove();}catch(e){}_meRing=null;}
-    _meGpsHeading=null;_meCompassHeading=null;_meArrowDeg=null;
   }
 }
 document.addEventListener('visibilitychange',()=>{
