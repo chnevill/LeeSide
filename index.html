@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v730';
+const APP_VERSION='v731';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7852,6 +7852,7 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
     else map.fitBounds(boundsToFit,{padding:[30,30]});
   }
   startMyLocation(); // v725: the blue dot now follows you while the map is open
+  map.on('moveend',_meCheckView); // v731: GPS is only kept on while the dot is on screen or near it
   map.on('moveend',()=>{
     const c=map.getCenter();
     _siteMapLastView={lat:c.lat,lon:c.lng,zoom:map.getZoom()};
@@ -7886,8 +7887,23 @@ function _meOnPos(pos){
   if(_meStats){_meStats.n++;_meStats.acc=Math.round(c.accuracy);}
   _meUpdate(c.latitude,c.longitude,c.accuracy);
 }
+// v731: the dot's last known position decides whether the GPS needs to be on. If the dot is well off the
+// part of the map being looked at (more than half a screen beyond each edge) the GPS is switched off and the
+// dot stays where it was; panning back toward it switches the GPS on again. Until the first fix arrives
+// there is no position yet, so the GPS stays on.
+function _meNearView(){
+  if(!_siteMapInstance||!_meMarker)return true;
+  try{return _siteMapInstance.getBounds().pad(0.5).contains(_meMarker.getLatLng());}catch(e){return true;}
+}
+function _meCheckView(){
+  if(!_meMapOpen()||document.hidden)return;
+  const near=_meNearView();
+  if(near&&_meWatchId==null)startMyLocation();
+  else if(!near&&_meWatchId!=null)stopMyLocation('dot is off screen');
+}
 function startMyLocation(){
   if(!_meMapOpen()||document.hidden||_meWatchId!=null||!navigator.geolocation)return;
+  if(!_meNearView())return; // v731: the dot is far from the view - the GPS stays off until the map is moved back toward it
   // a quick first dot (can be a recent cached fix) while the live GPS fix warms up
   if(!_meMarker)getCurrentLocation(false).then(loc=>{if(loc&&_meStats&&!_meStats.n)_meUpdate(loc.lat,loc.lon,0);}).catch(()=>{});
   _meStats={n:0,acc:null,t0:Date.now(),err:null};
