@@ -18,7 +18,7 @@ function log(m){const s=((Date.now()-t0)/1000).toFixed(1).padStart(6)+'s  '+m;lo
 document.getElementById('pv').textContent='(page '+PAGE+')';
 let reg=null;
 function st(){const r=reg,c=navigator.serviceWorker.controller;
-  document.getElementById('state').textContent='controller: '+(c?'yes':'no')+' | active: '+(r&&r.active?r.active.state:'-')+' | waiting: '+(r&&r.waiting?r.waiting.state:'-')+' | installing: '+(r&&r.installing?r.installing.state:'-');}
+  document.getElementById('state').textContent='controller: '+(c?('yes ('+c.scriptURL.replace(location.origin,'')+', '+c.state+')'):'NO - page is not controlled')+' | active: '+(r&&r.active?r.active.state:'-')+' | waiting: '+(r&&r.waiting?r.waiting.state:'-')+' | installing: '+(r&&r.installing?r.installing.state:'-');}
 function track(w,why){if(!w)return;log(why+': worker '+w.state);w.addEventListener('statechange',()=>{log(why+': worker -> '+w.state);st();});}
 async function ask(w){return new Promise(res=>{const h=e=>{if(e.data&&e.data.version){navigator.serviceWorker.removeEventListener('message',h);res(e.data.version);}};navigator.serviceWorker.addEventListener('message',h);w.postMessage('version');setTimeout(()=>res('(no answer)'),3000);});}
 async function init(){
@@ -33,7 +33,8 @@ async function init(){
     if(reg.waiting)track(reg.waiting,'waiting at start');
     st();
     const c=navigator.serviceWorker.controller;
-    if(c)log('running worker answers version: '+await ask(c));
+    if(c){const v=await ask(c);log('page expects the newest worker; the worker actually controlling this page says: '+v);}else log('this page is NOT controlled by any worker');
+    if(reg.active)log('registration active worker says: '+await ask(reg.active));
     log('calling reg.update() ...');
     try{await reg.update();log('reg.update() finished');}catch(e){log('reg.update() FAILED: '+e);}
     st();
