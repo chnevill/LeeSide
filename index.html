@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v732';
+const APP_VERSION='v733';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7545,7 +7545,6 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
     return;
   }
   container.innerHTML='';
-  stopMyLocation('map rebuilt');
   if(_siteMapInstance){_siteMapInstance.remove();_siteMapInstance=null;}
   ['siteMapLayerBtn','siteMapLayerMenu','siteMapSkywaysBtn','siteMapThermalsBtn'].forEach(id=>{const el=document.getElementById(id);if(el)el.remove();});
   document.getElementById('siteMapSearchInput').value='';
@@ -7851,8 +7850,12 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
     if(boundsToFit.length===1)map.setView(boundsToFit[0],13);
     else map.fitBounds(boundsToFit,{padding:[30,30]});
   }
-  startMyLocation(); // v725: the blue dot now follows you while the map is open
-  map.on('moveend',_meCheckView); // v731: GPS is only kept on while the dot is on screen or near it
+  getCurrentLocation(false).then(loc=>{
+    if(!loc||!_siteMapInstance)return;
+    _siteMapLastLoc=loc;
+    const meIcon=L.divIcon({html:'<div style="width:14px;height:14px;border-radius:50%;background:#4a90e2;border:2px solid #fff;box-shadow:0 0 0 3px rgba(74,144,226,0.4)"></div>',className:'',iconSize:[14,14],iconAnchor:[7,7]});
+    L.marker([loc.lat,loc.lon],{icon:meIcon}).addTo(_siteMapInstance).bindTooltip('You are here',{direction:'top',offset:[0,-10]});
+  });
   map.on('moveend',()=>{
     const c=map.getCenter();
     _siteMapLastView={lat:c.lat,lon:c.lng,zoom:map.getZoom()};
@@ -7862,66 +7865,6 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
 }
 
 
-// v725: "you are here" dot that follows you while the Sites map is open, (v730: no direction arrow, v732: no accuracy
-// ring any more). GPS is only on while the map is open and the app is in front; it is switched off
-// when the map closes or the app goes to the background.
-let _meWatchId=null,_meMarker=null,_meStats=null;
-const ME_ICON_HTML='<div style="position:absolute;left:15px;top:15px;width:14px;height:14px;border-radius:50%;background:#4a90e2;border:2px solid #fff;box-shadow:0 0 0 3px rgba(74,144,226,0.4)"></div>';
-function _meMapOpen(){const ov=document.getElementById('siteMapOverlay');return !!(_siteMapInstance&&ov&&ov.classList.contains('open'));}
-function _meUpdate(lat,lon,acc){
-  if(!_meMapOpen())return;
-  const ll=[lat,lon];
-  if(!_meMarker){
-    const icon=L.divIcon({html:ME_ICON_HTML,className:'',iconSize:[44,44],iconAnchor:[22,22]});
-    _meMarker=L.marker(ll,{icon,keyboard:false,zIndexOffset:1000}).addTo(_siteMapInstance).bindTooltip('You are here',{direction:'top',offset:[0,-12]});
-  }else _meMarker.setLatLng(ll);
-  _siteMapLastLoc={lat,lon};
-}
-function _meOnPos(pos){
-  if(!_meMapOpen()){stopMyLocation('map not open');return;}
-  const c=pos.coords;
-  if(_meStats){_meStats.n++;_meStats.acc=Math.round(c.accuracy);}
-  _meUpdate(c.latitude,c.longitude,c.accuracy);
-}
-// v731: the dot's last known position decides whether the GPS needs to be on. If the dot is well off the
-// part of the map being looked at (more than half a screen beyond each edge) the GPS is switched off and the
-// dot stays where it was; panning back toward it switches the GPS on again. Until the first fix arrives
-// there is no position yet, so the GPS stays on.
-function _meNearView(){
-  if(!_siteMapInstance||!_meMarker)return true;
-  try{return _siteMapInstance.getBounds().pad(0.5).contains(_meMarker.getLatLng());}catch(e){return true;}
-}
-function _meCheckView(){
-  if(!_meMapOpen()||document.hidden)return;
-  const near=_meNearView();
-  if(near&&_meWatchId==null)startMyLocation();
-  else if(!near&&_meWatchId!=null)stopMyLocation('dot is off screen');
-}
-function startMyLocation(){
-  if(!_meMapOpen()||document.hidden||_meWatchId!=null||!navigator.geolocation)return;
-  if(!_meNearView())return; // v731: the dot is far from the view - the GPS stays off until the map is moved back toward it
-  // a quick first dot (can be a recent cached fix) while the live GPS fix warms up
-  if(!_meMarker)getCurrentLocation(false).then(loc=>{if(loc&&_meStats&&!_meStats.n)_meUpdate(loc.lat,loc.lon,0);}).catch(()=>{});
-  _meStats={n:0,acc:null,t0:Date.now(),err:null};
-  try{
-    _meWatchId=navigator.geolocation.watchPosition(_meOnPos,err=>{if(_meStats&&!_meStats.err)_meStats.err=err&&err.code;},{enableHighAccuracy:true,maximumAge:5000,timeout:20000});
-    try{logAuthEvent('map location follow started, Data Saver setting '+(settings.wifiOnly?'on':'off')+', Data Saver active '+(dataSaverActive()?'yes':'no'));}catch(e){}
-  }catch(e){_meWatchId=null;}
-}
-function stopMyLocation(why){
-  if(_meWatchId!=null){
-    try{navigator.geolocation.clearWatch(_meWatchId);}catch(e){}
-    _meWatchId=null;
-    try{const st=_meStats||{};logAuthEvent('map location follow stopped ('+why+'): '+(st.n||0)+' updates over '+Math.round((Date.now()-(st.t0||Date.now()))/1000)+' s, last accuracy '+(st.acc==null?'none':st.acc+' m')+(st.err?', error code '+st.err:''));}catch(e){}
-  }
-  if(why==='map rebuilt'||why==='map closed'||why==='map not open'){
-    if(_meMarker){try{_meMarker.remove();}catch(e){}_meMarker=null;}
-  }
-}
-document.addEventListener('visibilitychange',()=>{
-  if(document.hidden)stopMyLocation('app in background');
-  else if(_meMapOpen())startMyLocation();
-});
 let _siteMapLastLoc=null;
 // v675: where the map was left is only remembered for 30 minutes. After longer than that (map
 // unused, or app in the background) it goes back to your current area instead.
@@ -11715,7 +11658,6 @@ function wire(){
   document.getElementById('siteMapViewBtn').addEventListener('click',()=>openSiteMapView());
   document.getElementById('siteMapViewFullBtn').addEventListener('click',()=>openSiteMapView());
   document.getElementById('siteMapCloseBtn').addEventListener('click',()=>{
-    stopMyLocation('map closed');
     closeOverlay('siteMapOverlay');
     if(_siteMapReturnSite){
       const site=_siteMapReturnSite;
