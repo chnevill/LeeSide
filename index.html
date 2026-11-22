@@ -138,7 +138,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);fon
 .site-map-pin{font-size:26px;text-align:center;line-height:26px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.5))}
 .site-map-label{background:rgba(10,15,25,0.92)!important;border:1px solid rgba(255,255,255,0.15)!important;color:#e8f0ff!important;font-family:'DM Sans',sans-serif;font-size:12px!important;font-weight:600;padding:3px 8px!important;border-radius:8px!important;box-shadow:none!important}
 .site-map-label::before{display:none!important}
-#ptrSpinner.spinning,#snPtrSpinner.spinning{animation:ptr-spin .7s linear infinite}
+#ptrSpinner.spinning,#snPtrSpinner.spinning,#photosPendingSpinner.spinning{animation:ptr-spin .7s linear infinite} /* v743: the photo-sync spinner was missing from this rule, so it never turned */
 #content::-webkit-scrollbar{display:none}
 .screen{display:none;padding:0 20px 110px}
 .screen.active{display:block}
@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v742';
+const APP_VERSION='v743';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
