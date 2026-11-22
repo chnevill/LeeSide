@@ -295,6 +295,8 @@ body.theme-light .star-input button,body.theme-terra .star-input button{color:rg
 .dc-val{font-family:'Syne',sans-serif;font-weight:700;font-size:18px;color:var(--text);overflow-wrap:anywhere;word-break:break-word}
 .dc-val.sm{font-size:var(--fs);font-weight:500}
 #siteMapContainer .leaflet-bottom{padding-bottom:env(safe-area-inset-bottom,0px)}
+/* v740: the Sites map covers the whole screen, so the blur the other popups put on whatever is behind them is never seen here - and it costs a redraw of that blur on every frame while the map is panned */
+#siteMapOverlay{backdrop-filter:none;-webkit-backdrop-filter:none}
 .detail-notes-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:14px;margin-bottom:18px;font-size:var(--fs);line-height:1.6;color:var(--text2);font-style:italic;white-space:pre-wrap;word-break:break-word}
 .detail-photos{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
 .detail-photos img{width:84px;height:84px;object-fit:cover;border-radius:10px;border:1px solid var(--border);cursor:pointer}
@@ -1148,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v739';
+const APP_VERSION='v740';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
