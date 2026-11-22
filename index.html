@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v741';
+const APP_VERSION='v742';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -4367,77 +4367,7 @@ function _refreshOpenView(sheetId,redraw){
 // an old version indefinitely with no way to force it. Harmless to call when
 // nothing is actually waiting (the common case, every time) - just a quick
 // property check.
-// v741: self-heal for phones whose normal update routes get stuck (seen on an iPhone home-screen app that stayed
-// on an old version for a day, through a reboot). Asks the server directly which version is current by reading
-// the first lines of sw.js (it changes on every deploy). If the server is newer, it downloads the new
-// index.html, checks it is complete and really is that version, and only then replaces the saved copies; the
-// reload itself happens at the same safe moments as the normal update swap (_checkForWaitingUpdate), never
-// while a form or note is open. Does nothing offline, never deletes anything, never
-// touches the service worker or any user data, and tries at most once per version per app session.
-let _vcLast=0,_vcBusy=false,_vcReady=null;
-function _vcNum(v){const m=/v(\d+)/.exec(v||'');return m?parseInt(m[1],10):0;}
-function _vcSwState(){
-  try{
-    const r=_swReg,c=navigator.serviceWorker&&navigator.serviceWorker.controller;
-    return 'controller='+(c?'yes':'no')+' active='+(r&&r.active?r.active.state:'-')+' waiting='+(r&&r.waiting?r.waiting.state:'-')+' installing='+(r&&r.installing?r.installing.state:'-');
-  }catch(e){return 'unknown';}
-}
-async function _vcFetchText(url,ms){
-  const ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),ms);
-  try{
-    const r=await fetch(url,{cache:'no-store',signal:ctl.signal});
-    if(!r.ok)throw new Error('status '+r.status);
-    return {text:await r.text(),res:r};
-  }finally{clearTimeout(to);}
-}
-async function _versionCheck(trigger){
-  if(_vcBusy||_vcReady||!navigator.onLine||document.hidden)return;
-  if(Date.now()-_vcLast<600000)return; // at most every 10 minutes
-  _vcBusy=true;_vcLast=Date.now();
-  try{
-    const bust='?vc='+Date.now();
-    const sw=await _vcFetchText('/LeeSide/sw.js'+bust,8000);
-    const m=/const CACHE='leeside-(v\d+)'/.exec(sw.text);
-    if(!m){log('version check ('+trigger+'): could not read the server version');return;}
-    const server=m[1];
-    const behind=_vcNum(server)>_vcNum(APP_VERSION);
-    log('version check ('+trigger+'): running '+APP_VERSION+', server '+server+(behind?' - behind':' - up to date')+' | '+_vcSwState());
-    if(!behind)return;
-    if(sessionStorage.getItem('_vcTried')===server){log('version check: already tried '+server+' this session, not trying again');return;}
-    sessionStorage.setItem('_vcTried',server);
-    const idx=await _vcFetchText('/LeeSide/index.html'+bust,25000);
-    // complete and really the version sw.js announced (a deploy half-way through would fail one of these)
-    if(idx.text.length<500000||idx.text.indexOf("const APP_VERSION='"+server+"'")<0||idx.text.trimEnd().slice(-7)!=='</html>'){
-      log('version check: downloaded page is not the complete '+server+' (length '+idx.text.length+'), leaving everything as it is');
-      return;
-    }
-    const hdr={'content-type':'text/html; charset=utf-8'};
-    const et=idx.res.headers.get('etag'),lm=idx.res.headers.get('last-modified');
-    if(et)hdr['etag']=et;
-    if(lm)hdr['last-modified']=lm;
-    let n=0;
-    for(const k of await caches.keys()){
-      if(k.indexOf('leeside-v')!==0)continue; // the app's own caches only (not the share-target one)
-      const c=await caches.open(k);
-      for(const u of ['/LeeSide/','/LeeSide/index.html'])await c.put(u,new Response(idx.text,{status:200,headers:hdr}));
-      n++;
-    }
-    if(!n){log('version check: no app cache found to update, leaving everything as it is');return;}
-    _vcReady=server;
-    log('version check: '+server+' downloaded and checked, saved into '+n+' cache(s); will switch at the next safe moment (tab switch or closed form)');
-  }catch(e){
-    log('version check failed: '+(e&&e.message?e.message:e));
-  }finally{_vcBusy=false;}
-}
 function _checkForWaitingUpdate(){
-  if(_vcReady&&_overlayStack.length===0){
-    const v=_vcReady;_vcReady=null;
-    log('version check: switching to '+v+' now');
-    sessionStorage.setItem('_restoreTabAfterUpdate',currentTab);
-    sessionStorage.setItem('_swLastReloadAt',Date.now().toString()); // keeps the normal update swap from reloading a second time
-    location.reload();
-    return;
-  }
   if(_swReg&&_swReg.waiting&&_overlayStack.length===0){
     // Saved right here, at the moment we've decided it's safe to update -
     // not inside the controllerchange handler below, since that's a generic
@@ -13323,7 +13253,6 @@ if('serviceWorker' in navigator){
       console.log('SW registered:',r.scope);
       _swReg=r;
       r.update(); // force a check for a newer sw.js right now, don't wait for the browser's own heuristics
-      setTimeout(()=>_versionCheck('app start'),5000); // v741
     })
     .catch(e=>console.warn('SW registration failed:',e));
   // An installed home-screen app can get resumed from the background rather
@@ -13335,7 +13264,7 @@ if('serviceWorker' in navigator){
   // that case too, so reopening the app always re-checks for a newer version,
   // regardless of whether Android gave it a fresh load or just resumed it.
   document.addEventListener('visibilitychange',()=>{
-    if(document.visibilityState==='visible'&&_swReg){_swReg.update();setTimeout(()=>_versionCheck('foreground'),3000);} // v741
+    if(document.visibilityState==='visible'&&_swReg)_swReg.update();
   });
 }
 </script>
