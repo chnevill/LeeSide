@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="SW Lab">
+<title>SW Lab</title>
+<style>body{font:15px -apple-system,system-ui,sans-serif;margin:0;padding:14px;background:#0b1320;color:#e8f0ff}
+button{font:inherit;padding:10px 12px;margin:4px 6px 4px 0;border-radius:8px;border:1px solid #4a7ba8;background:#16263d;color:#e8f0ff}
+#log{white-space:pre-wrap;font:12px ui-monospace,Menlo,monospace;margin-top:10px;line-height:1.45}h1{font-size:18px;margin:0 0 6px}</style></head>
+<body>
+<h1>SW Lab <span id="pv"></span></h1>
+<div id="state"></div>
+<div><button id="b1">Check for update now</button><button id="b2">Simulate tab switch</button><button id="b3">Show install logs</button><button id="b4">Reload page</button></div>
+<div id="log"></div>
+<script>
+const PAGE='lab-1';
+const t0=Date.now();
+const logEl=document.getElementById('log');
+function log(m){const s=((Date.now()-t0)/1000).toFixed(1).padStart(6)+'s  '+m;logEl.textContent+=s+'\n';}
+document.getElementById('pv').textContent='(page '+PAGE+')';
+let reg=null;
+function st(){const r=reg,c=navigator.serviceWorker.controller;
+  document.getElementById('state').textContent='controller: '+(c?'yes':'no')+' | active: '+(r&&r.active?r.active.state:'-')+' | waiting: '+(r&&r.waiting?r.waiting.state:'-')+' | installing: '+(r&&r.installing?r.installing.state:'-');}
+function track(w,why){if(!w)return;log(why+': worker '+w.state);w.addEventListener('statechange',()=>{log(why+': worker -> '+w.state);st();});}
+async function ask(w){return new Promise(res=>{const h=e=>{if(e.data&&e.data.version){navigator.serviceWorker.removeEventListener('message',h);res(e.data.version);}};navigator.serviceWorker.addEventListener('message',h);w.postMessage('version');setTimeout(()=>res('(no answer)'),3000);});}
+async function init(){
+  if(!('serviceWorker' in navigator)){log('no service worker support');return;}
+  log('standalone='+(window.navigator.standalone===true)+' | UA '+navigator.userAgent.replace(/^Mozilla\/5.0 /,'').slice(0,70));
+  navigator.serviceWorker.addEventListener('controllerchange',()=>{log('CONTROLLERCHANGE (a new worker took over)');st();});
+  try{
+    reg=await navigator.serviceWorker.register('/LeeSide/swlab/sw.js',{updateViaCache:'none',scope:'/LeeSide/swlab/'});
+    log('registered | scope '+reg.scope);
+    reg.addEventListener('updatefound',()=>{log('UPDATEFOUND');track(reg.installing,'new');st();});
+    if(reg.installing)track(reg.installing,'installing at start');
+    if(reg.waiting)track(reg.waiting,'waiting at start');
+    st();
+    const c=navigator.serviceWorker.controller;
+    if(c)log('running worker answers version: '+await ask(c));
+    log('calling reg.update() ...');
+    try{await reg.update();log('reg.update() finished');}catch(e){log('reg.update() FAILED: '+e);}
+    st();
+  }catch(e){log('register FAILED: '+e);}
+}
+document.getElementById('b1').onclick=async()=>{log('manual reg.update() ...');try{await reg.update();log('manual reg.update() finished');}catch(e){log('manual update FAILED: '+e);}st();};
+document.getElementById('b2').onclick=()=>{ // same rule the real app uses at a tab switch
+  if(reg&&reg.waiting){log('tab switch: a worker is waiting -> sending skipWaiting');reg.waiting.postMessage('skipWaiting');}
+  else log('tab switch: nothing waiting yet');st();};
+document.getElementById('b3').onclick=async()=>{
+  const c=await caches.open('swlab-log');let n=0;
+  for(const k of await c.keys()){n++;const r=await c.match(k);log('INSTALL LOG '+k.url.split('/').pop()+': '+await r.text());}
+  if(!n)log('no install logs saved yet');};
+document.getElementById('b4').onclick=()=>location.reload();
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&reg){log('came to front -> reg.update()');reg.update().catch(e=>log('update FAILED: '+e));setTimeout(st,1500);}});
+setInterval(st,2000);
+init();
+</script></body></html>
