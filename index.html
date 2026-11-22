@@ -1148,7 +1148,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v731';
+const APP_VERSION='v732';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7862,10 +7862,10 @@ async function openSiteMapView(focusSite,returnToNote,focusPoint){
 }
 
 
-// v725: "you are here" dot that follows you while the Sites map is open, with an accuracy ring (v730: no
-// direction arrow any more). GPS is only on while the map is open and the app is in front; it is switched off
+// v725: "you are here" dot that follows you while the Sites map is open, (v730: no direction arrow, v732: no accuracy
+// ring any more). GPS is only on while the map is open and the app is in front; it is switched off
 // when the map closes or the app goes to the background.
-let _meWatchId=null,_meMarker=null,_meRing=null,_meStats=null;
+let _meWatchId=null,_meMarker=null,_meStats=null;
 const ME_ICON_HTML='<div style="position:absolute;left:15px;top:15px;width:14px;height:14px;border-radius:50%;background:#4a90e2;border:2px solid #fff;box-shadow:0 0 0 3px rgba(74,144,226,0.4)"></div>';
 function _meMapOpen(){const ov=document.getElementById('siteMapOverlay');return !!(_siteMapInstance&&ov&&ov.classList.contains('open'));}
 function _meUpdate(lat,lon,acc){
@@ -7875,10 +7875,6 @@ function _meUpdate(lat,lon,acc){
     const icon=L.divIcon({html:ME_ICON_HTML,className:'',iconSize:[44,44],iconAnchor:[22,22]});
     _meMarker=L.marker(ll,{icon,keyboard:false,zIndexOffset:1000}).addTo(_siteMapInstance).bindTooltip('You are here',{direction:'top',offset:[0,-12]});
   }else _meMarker.setLatLng(ll);
-  if(acc>0){
-    if(!_meRing)_meRing=L.circle(ll,{radius:acc,color:'#4a90e2',weight:1,opacity:0.35,fillColor:'#4a90e2',fillOpacity:0.12,interactive:false}).addTo(_siteMapInstance);
-    else{_meRing.setLatLng(ll);_meRing.setRadius(acc);}
-  }
   _siteMapLastLoc={lat,lon};
 }
 function _meOnPos(pos){
@@ -7920,7 +7916,6 @@ function stopMyLocation(why){
   }
   if(why==='map rebuilt'||why==='map closed'||why==='map not open'){
     if(_meMarker){try{_meMarker.remove();}catch(e){}_meMarker=null;}
-    if(_meRing){try{_meRing.remove();}catch(e){}_meRing=null;}
   }
 }
 document.addEventListener('visibilitychange',()=>{
