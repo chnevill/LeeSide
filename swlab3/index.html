@@ -11,7 +11,7 @@ button{font:inherit;padding:10px 12px;margin:4px 6px 4px 0;border-radius:8px;bor
 <div><button id="b1">Check for update now</button><button id="b2">Simulate tab switch</button><button id="b3">Show install logs</button><button id="b4">Reload page</button></div>
 <div id="log"></div>
 <script>
-const PAGE='p1';
+const PAGE='p2';
 const t0=Date.now();
 const logEl=document.getElementById('log');
 function log(m){const s=((Date.now()-t0)/1000).toFixed(1).padStart(6)+'s  '+m;logEl.textContent+=s+'\n';}

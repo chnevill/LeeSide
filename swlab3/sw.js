@@ -1,4 +1,4 @@
-const CACHE='lab3-v1';
+const CACHE='lab3-v2';
 // v676: holds one file shared to LeeSide from another app until the page picks it up
 const SHARE_CACHE='lab3-share';
 const URLS=[
