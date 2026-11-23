@@ -1,4 +1,4 @@
-const CACHE='leeside-v743';
+const CACHE='leeside-v744';
 // v676: holds one file shared to LeeSide from another app until the page picks it up
 const SHARE_CACHE='leeside-share';
 const URLS=[
