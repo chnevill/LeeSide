@@ -1,4 +1,4 @@
-const LAB='lab-1';
+const LAB='lab-2';
 // SW update lab: a tiny stand-in for LeeSide's own service worker, living in its own folder so it can never touch the real app.
 // It copies the real one's install step (two full downloads of the real index.html, 'reload' mode into its own cache)
 // and records how long the install took, so the page can show whether an iPhone finishes it.
