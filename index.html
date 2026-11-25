@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v745';
+const APP_VERSION='v746';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6735,10 +6735,15 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
 }
 let _windCache={}; // site -> {data, fetchedAt}
 const WIND_CACHE_MS=15*60*1000;
+const WIND_TIMEOUT_MS=5000; // v746: was 10 s - healthy replies take well under 2 s, so a request that hasn't answered in 5 s is given up on sooner
+const WIND_FAIL_COOLDOWN_MS=30000; // v746: a site whose forecast just failed isn't asked for again by a non-forced redraw for 30 s (stops repeated returns to the app piling up new rounds of requests); pull-down still forces a retry
+const SITE_WIND_FIRST=10; // v746: only the nearest 10 sites ask for a forecast up front; the rest ask as they scroll into view
+let _windFailAt={};
+let _siteWindObserver=null;
 // v727: the last good forecast for each site is also kept on this device (never synced to Drive) for up to
 // an hour. When a fresh forecast can't be fetched, the card shows the saved one with "updated N min ago"
 // and keeps trying in the background; as soon as a fresh one arrives it replaces the saved one.
-const WIND_STALE_MS=60*60*1000;
+const WIND_STALE_MS=6*60*60*1000; // v746: was 1 hour - a saved forecast up to 6 hours old is shown (labelled with its age) when a fresh one can't be fetched
 let _windSaved=(()=>{try{const o=JSON.parse(localStorage.getItem('leeside_windSaved'));return(o&&typeof o==='object')?o:{};}catch(e){return {};}})();
 let _windSaveTimer=null;
 function _windSavedFor(coords){
@@ -6758,7 +6763,7 @@ function _windSaveSoon(){
     }catch(e){}
   },3000);
 }
-function _windAgeText(ms){const m=Math.max(1,Math.round(ms/60000));return m<60?m+' min ago':'1 hr ago';}
+function _windAgeText(ms){const m=Math.max(1,Math.round(ms/60000));return m<60?m+' min ago':Math.round(m/60)+' hr ago';}
 // v704: _windInflight lets two callers asking for the same site at the same time share ONE
 // Open-Meteo request; _windTried records that a site has been asked for at least once, so a
 // redraw that is not about the forecast (see renderSiteNotesCardList's noFetch) never has to ask again.
@@ -6768,8 +6773,9 @@ async function fetchSiteWind(coords,force,timeoutMs){
   const cached=_windCache[coords];
   if(!force&&cached&&Date.now()-cached.fetchedAt<WIND_CACHE_MS)return cached.data;
   if(!force&&_windInflight[coords])return _windInflight[coords];
+  if(!force&&_windFailAt[coords]&&Date.now()-_windFailAt[coords]<WIND_FAIL_COOLDOWN_MS)return null; // v746: failed a moment ago - don't start another round yet
   _windTried[coords]=true;
-  const p=_fetchSiteWindNet(coords,!!force,timeoutMs||10000);
+  const p=_fetchSiteWindNet(coords,!!force,timeoutMs||WIND_TIMEOUT_MS);
   _windInflight[coords]=p;
   p.then(()=>{if(_windInflight[coords]===p)delete _windInflight[coords];});
   return p;
@@ -6812,7 +6818,7 @@ function _windNoteFail(coords,kind,ms){
   bt.fail++;bt.kinds[kind]=(bt.kinds[kind]||0)+1;
   if(bt.logged<5){bt.logged++;try{log(`forecast fetch failed for ${coords}: ${kind} (after ${ms} ms)`);}catch(_){}}
 }
-async function _fetchSiteWindNet(coords,force,timeoutMs=10000){
+async function _fetchSiteWindNet(coords,force,timeoutMs=WIND_TIMEOUT_MS){
   const[lat,lon]=coords.split(',').map(parseFloat);
     // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
     // the default can occasionally show gust below sustained speed, a
@@ -6858,6 +6864,7 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=10000){
         hourly:(j.hourly&&j.hourly.time)?j.hourly.time.map((t,i)=>({time:t,speed:j.hourly.wind_speed_10m[i],dir:j.hourly.wind_direction_10m[i],gust:j.hourly.wind_gusts_10m[i]})):[],
         daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
       };
+      delete _windFailAt[coords];
       _windCache[coords]={data:result,fetchedAt:Date.now()};
       _windSaved[coords]={data:result,t:Date.now(),unit:windUnitParam()};_windSaveSoon(); // v727
       if(_windBatch){_windBatch.ok++;_windBatch.okMs.push(ms);}
@@ -6874,6 +6881,7 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=10000){
       _windRetrying--;
       continue;
     }
+    _windFailAt[coords]=Date.now();
     _windNoteFail(coords,status?('HTTP '+status):kind,ms);
     _windRelease();
     return null;
@@ -6898,10 +6906,12 @@ function prefetchSitesWeather(){
   if(!shown.length)return; // nothing to warm, and no reason to prompt for location this early if there's nothing to show it for
   getCurrentLocation(false).then(loc=>{
     if(!loc)return; // same as today - Sites will retry this itself when opened
-    shown.forEach(({uuid})=>{
-      const c=siteCoordsByUuid[uuid];
-      if(c)fetchSiteWind(c,false);
-    });
+    // v746: only the nearest SITE_WIND_FIRST sites are warmed; the rest ask when scrolled into view on Sites
+    shown.map(({uuid})=>{
+      const c=siteCoordsByUuid[uuid];if(!c)return null;
+      const[la,lo]=c.split(',').map(parseFloat);
+      return{c,d:haversineKm(loc.lat,loc.lon,la,lo)};
+    }).filter(Boolean).sort((a,b)=>a.d-b.d).slice(0,SITE_WIND_FIRST).forEach(x=>fetchSiteWind(x.c,false));
   });
 }
 function fmtFlightWind(f){
@@ -8159,7 +8169,7 @@ function _paintSiteWind(uuid,w,staleMs){
   const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
   if(slot){
     if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>';} // v701: the Windy link stays visible without a forecast
-    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>`;}
+    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>${staleMs>=WIND_CACHE_MS?`<span style="display:block;color:var(--text3);font-size:11px">saved ${_windAgeText(staleMs)}</span>`:''}`;}
   }
   const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
   if(accentEl)accentEl.style.background=w?windSpeedToColor(w.speed):'transparent';
@@ -8235,7 +8245,8 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
   }).join('');
 
   // Fetch wind in parallel, fill in each card as it resolves — don't block the list on this
-  withDist.forEach(({uuid})=>{
+  // v746: the nearest SITE_WIND_FIRST cards ask right away; the others ask when they scroll into view
+  const _loadSiteWind=({uuid})=>{
     const coords=siteCoordsByUuid[uuid];
     if(!coords)return;
     const showResult=w=>{
@@ -8259,7 +8270,35 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
       else _siteWindState(uuid);
     }
     fetchSiteWind(coords,force).then(showResult);
-  });
+  };
+  if(_siteWindObserver){_siteWindObserver.disconnect();_siteWindObserver=null;}
+  withDist.slice(0,SITE_WIND_FIRST).forEach(_loadSiteWind);
+  {
+    const pending=[];
+    withDist.slice(SITE_WIND_FIRST).forEach(it=>{
+      const coords=siteCoordsByUuid[it.uuid];
+      if(!coords)return;
+      const _c=_windCache[coords];
+      if(noFetch||windFilter||(_c&&Date.now()-_c.fetchedAt<WIND_CACHE_MS)||!('IntersectionObserver' in window)){_loadSiteWind(it);return;} // already have it / redraw / no observer support: nothing extra to wait for
+      const sv=_windSavedFor(coords);
+      if(sv)_paintSiteWind(it.uuid,sv.data,sv.age);else _siteWindState(it.uuid);
+      pending.push(it);
+    });
+    if(pending.length){
+      const byUuid=new Map(pending.map(x=>[x.uuid,x]));
+      _siteWindObserver=new IntersectionObserver(entries=>{
+        entries.forEach(en=>{
+          if(!en.isIntersecting)return;
+          const u=en.target.getAttribute('data-sitenotecard');
+          const it=byUuid.get(u);if(!it)return;
+          byUuid.delete(u);
+          if(_siteWindObserver)_siteWindObserver.unobserve(en.target);
+          _loadSiteWind(it);
+        });
+      },{rootMargin:'300px 0px'});
+      pending.forEach(it=>{const el=listEl.querySelector(`[data-sitenotecard="${it.uuid}"]`);if(el)_siteWindObserver.observe(el);else _loadSiteWind(it);});
+    }
+  }
 
   // Wire up toggle taps (delegated once per render)
   listEl.querySelectorAll('[data-windtoggle]').forEach(t=>t.onclick=()=>cycleWindGranularity());
@@ -12025,7 +12064,7 @@ function wire(){
       // OLD unit even though nothing here marks them as such. Clear the fetch
       // cache so the next time sites are shown, it fetches fresh data in the
       // new unit instead of just relabeling stale numbers.
-      _windCache={};_windTried={};
+      _windCache={};_windTried={};_windFailAt={};
     }
     saveSettings();
   });
@@ -12970,7 +13009,9 @@ function _refreshSitesForecastOnReturn(){
     const sinp=document.getElementById('siteSearchInput');
     if(sinp&&sinp.value.trim())return;
     const now=Date.now();
-    const stale=sites.some(s=>!s._deleted&&s.coords&&!(_windCache[s.coords]&&now-_windCache[s.coords].fetchedAt<WIND_CACHE_MS));
+    // v746: only the nearest SITE_WIND_FIRST sites (and any that already have a forecast) count - sites not yet scrolled to are not "stale"
+    const firstCoords=(_siteNoteOrder&&_siteNoteOrder.length)?_siteNoteOrder.slice(0,SITE_WIND_FIRST).map(u=>siteCoordsByUuid[u]).filter(Boolean):sites.filter(s=>!s._deleted&&s.coords).slice(0,SITE_WIND_FIRST).map(s=>s.coords);
+    const stale=firstCoords.some(c=>!(_windCache[c]&&now-_windCache[c].fetchedAt<WIND_CACHE_MS))||Object.keys(_windCache).some(c=>now-_windCache[c].fetchedAt>=WIND_CACHE_MS);
     if(stale)renderSiteNotesCardList(false,'');
   }catch(e){}
 }
