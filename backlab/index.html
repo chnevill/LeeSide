@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>BackLab</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0b6b52">
+<style>
+:root{--bg:#0b1a16;--card:#12292299;--line:#25483d;--tx:#e8f3ef;--dim:#8fb0a5;--ok:#4cd694;--bad:#ff6b6b;--warn:#ffc857;--btn:#0b6b52}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,sans-serif}
+body{padding:12px 14px 40px;padding-top:max(12px,env(safe-area-inset-top))}
+h1{font-size:20px;margin:4px 0 2px}
+h2{font-size:17px;margin:18px 0 6px}
+p{margin:6px 0}
+.dim{color:var(--dim);font-size:14px}
+button{font:inherit;color:#fff;background:var(--btn);border:0;border-radius:12px;padding:13px 16px;margin:5px 6px 5px 0;min-height:48px}
+button.alt{background:#27423a}
+button.big{width:100%;margin:6px 0}
+.box{background:#122922;border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0}
+.row{display:flex;flex-wrap:wrap;gap:4px 14px}
+.row div{min-width:130px}
+b.ok{color:var(--ok)} b.bad{color:var(--bad)} b.warn{color:var(--warn)}
+.test{display:block;width:100%;text-align:left;background:#1a3a31;border:2px solid transparent}
+.test.sel{border-color:var(--ok)}
+.test small{display:block;color:var(--dim);margin-top:2px}
+#log{font:12px/1.35 ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto;background:#07110e;border-radius:10px;padding:8px}
+.screen,.sheet{position:fixed;left:0;right:0;background:#17382e;padding:16px;padding-top:max(16px,env(safe-area-inset-top))}
+.screen{top:0;bottom:0;border-left:6px solid var(--ok)}
+.sheet{bottom:0;border-top:6px solid var(--warn);border-radius:18px 18px 0 0;box-shadow:0 -8px 30px #000a}
+dialog{background:#1f4a3d;color:var(--tx);border:2px solid #4cd694;border-radius:16px;padding:16px;max-width:88vw}
+dialog::backdrop{background:#000b}
+select{font:inherit;padding:10px;border-radius:10px;background:#1a3a31;color:var(--tx);border:1px solid var(--line)}
+.res{border-left:5px solid var(--dim);padding:6px 10px;margin:6px 0;background:#0e211b;border-radius:0 8px 8px 0}
+.res.pass{border-color:var(--ok)} .res.fail{border-color:var(--bad)} .res.info{border-color:var(--warn)}
+</style>
+</head>
+<body>
+<h1>BackLab <span class="dim" id="ver"></span></h1>
+<p class="dim">Test page for the Android back gesture. This is not LeeSide and shares nothing with it.</p>
+
+<div class="box" id="env"></div>
+
+<h2>Root guard (what catches a back swipe when nothing is open)</h2>
+<div class="box">
+  <select id="rootMode">
+    <option value="cw">A: CloseWatcher that re-arms itself</option>
+    <option value="hist">B: history entry (how LeeSide does it today)</option>
+    <option value="none">C: none (shows what an unguarded swipe does)</option>
+  </select>
+  <p class="dim">Changing this reloads the page. Start with A.</p>
+</div>
+
+<h2>Pick a test</h2>
+<div id="tests"></div>
+<div class="box" id="testPanel"></div>
+
+<h2>Open things by hand</h2>
+<div class="box">
+  <button id="bScreen">Open screen</button>
+  <button id="bDialog" class="alt">Open native dialog</button>
+  <button id="bCode" class="alt">Open 2 screens by code (7 s, no tap)</button>
+  <p class="dim" id="codeNote"></p>
+</div>
+
+<h2>Results</h2>
+<div id="results" class="dim">No tests finished yet.</div>
+<div class="box">
+  <button id="bCopy">Copy report</button>
+  <button id="bClear" class="alt">Clear results and log</button>
+  <p class="dim" id="copyNote"></p>
+</div>
+
+<h2>Live log</h2>
+<div id="log"></div>
+
+<script>
+'use strict';
+const VER='b1';
+document.getElementById('ver').textContent=VER;
+const $=s=>document.querySelector(s);
+const now=()=>performance.now();
+function ts(){const d=new Date();return d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0');}
+function lsGet(k,def){try{const v=localStorage.getItem(k);return v==null?def:JSON.parse(v);}catch(e){return def;}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+
+/* ---------- log ---------- */
+let LOG=lsGet('backlab_log',[]);
+function log(m){
+  LOG.push(ts()+'  '+m); if(LOG.length>300)LOG=LOG.slice(-300);
+  lsSet('backlab_log',LOG);
+  const el=$('#log'); el.textContent=LOG.slice(-80).join('\n'); el.scrollTop=el.scrollHeight;
+}
+
+/* ---------- state ---------- */
+const stack=[];            // open things, last = top
+let nextId=1;
+let lastBackAt=0, cluster=[];
+const C={opens:0,backCloses:0,buttonCloses:0,gestures:0,popstates:0,hidden:0,rootCaught:0,orderProblems:0,grouped:0};
+let rootMode=lsGet('backlab_root','cw');
+let test=null;             // running test
+let results=lsGet('backlab_results',[]);
+
+function stackNames(){return stack.map(s=>s.label).join(' > ')||'(empty)';}
+function counters(){
+  $('#env').innerHTML=
+   `<div class="row">
+     <div>Installed app mode: <b class="${envStandalone()?'ok':'bad'}">${envStandalone()?'yes':'NO - open from the home-screen icon'}</b></div>
+     <div>CloseWatcher: <b class="${window.CloseWatcher?'ok':'bad'}">${window.CloseWatcher?'available':'missing'}</b></div>
+     <div>Chrome: ${(navigator.userAgent.match(/Chrome\/([\d.]+)/)||[])[1]||'?'}</div>
+     <div>History entries: ${history.length}</div>
+   </div>
+   <div class="row" style="margin-top:6px">
+     <div>Open now: <b>${stack.length}</b></div>
+     <div>Back swipes seen: <b>${C.gestures}</b></div>
+     <div>Extra navigation (popstate): <b class="${C.popstates?'warn':''}">${C.popstates}</b></div>
+     <div>Left the app: <b class="${C.hidden?'warn':''}">${C.hidden}</b></div>
+     <div>Root guard caught: <b>${C.rootCaught}</b></div>
+   </div>`;
+}
+function envStandalone(){return matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;}
+
+/* ---------- closing bookkeeping (shared by every kind of overlay) ---------- */
+function closed(item,via){
+  if(item.done)return; item.done=true;
+  const top=stack[stack.length-1];
+  if(top!==item){
+    C.orderProblems++;
+    log('!! ORDER PROBLEM: closed "'+item.label+'" but the top one was "'+(top?top.label:'nothing')+'"');
+    if(test)test.order++;
+  }
+  const i=stack.indexOf(item); if(i>=0)stack.splice(i,1);
+  item.el.remove();
+  if(via==='back'){
+    C.backCloses++;
+    const t=now();
+    if(t-lastBackAt>80){C.gestures++;cluster=[item.label];}
+    else{cluster.push(item.label);C.grouped++;if(test)test.grouped++;log('!! the same back swipe closed '+cluster.length+' things at once: '+cluster.join(' + '));}
+    lastBackAt=t;
+    if(test)test.backCloses++;
+    log('BACK closed "'+item.label+'"   still open: '+stackNames());
+  }else{
+    C.buttonCloses++; if(test)test.buttonCloses++;
+    log('button closed "'+item.label+'"   still open: '+stackNames());
+  }
+  counters(); renderTest();
+}
+function opened(item,how){
+  stack.push(item); C.opens++; if(test)test.opens++;
+  log('opened "'+item.label+'" ('+how+')   open now: '+stackNames());
+  counters(); renderTest();
+}
+
+/* ---------- the three kinds of thing ---------- */
+function screenCount(){return stack.filter(s=>s.kind==='screen').length+1;}
+
+function makeWatcher(item){
+  const w=new CloseWatcher();
+  w.oncancel=()=>{log('(cancel event fired for "'+item.label+'")');};
+  w.onclose=()=>closed(item,item.viaButton?'button':'back');
+  item.w=w;
+  item.closeNow=()=>{item.viaButton=true;try{w.close();}catch(e){}if(!item.done)closed(item,'button');};
+}
+
+function openScreen(how){
+  const label='Screen '+(screenCount());
+  const el=document.createElement('div'); el.className='screen'; el.style.zIndex=10+stack.length;
+  el.innerHTML='<h2>'+label+'</h2><p class="dim">Opened by '+how+'. Swipe back to close just this one.</p>'+
+    '<button data-a="screen">Open next screen</button>'+
+    '<button data-a="sheet" class="alt">Open sheet</button>'+
+    '<button data-a="dialog" class="alt">Open native dialog</button>'+
+    '<button data-a="close" class="alt">Close (button)</button>';
+  document.body.appendChild(el);
+  const item={label,kind:'screen',el};
+  makeWatcher(item);
+  el.addEventListener('click',e=>handleAction(e,item));
+  opened(item,how);
+}
+function openSheet(how){
+  let n=stack.filter(s=>s.kind==='sheet').length+1; const label='Sheet '+n;
+  const el=document.createElement('div'); el.className='sheet'; el.style.zIndex=10+stack.length;
+  el.innerHTML='<b>'+label+'</b><p class="dim">Opened by '+how+'.</p>'+
+    '<button data-a="screen">Open screen</button><button data-a="close" class="alt">Close (button)</button>';
+  document.body.appendChild(el);
+  const item={label,kind:'sheet',el};
+  makeWatcher(item);
+  el.addEventListener('click',e=>handleAction(e,item));
+  opened(item,how);
+}
+function openDialog(how){
+  let n=stack.filter(s=>s.kind==='dialog').length+1; const label='Dialog '+n;
+  const el=document.createElement('dialog');
+  el.innerHTML='<b>'+label+'</b><p>Native dialog. Opened by '+how+'.</p>'+
+    '<button data-a="dialog">Open another dialog</button><button data-a="close" class="alt">Close (button)</button>';
+  document.body.appendChild(el);
+  const item={label,kind:'dialog',el};
+  item.closeNow=()=>{item.viaButton=true;el.close();};
+  el.addEventListener('cancel',()=>log('(cancel event fired for "'+label+'")'));
+  el.addEventListener('close',()=>closed(item,item.viaButton?'button':'back'));
+  el.addEventListener('click',e=>handleAction(e,item));
+  el.showModal();
+  opened(item,how);
+}
+function handleAction(e,item){
+  const a=e.target&&e.target.dataset&&e.target.dataset.a; if(!a)return;
+  if(a==='close')item.closeNow();
+  else if(a==='screen')openScreen('tap');
+  else if(a==='sheet')openSheet('tap');
+  else if(a==='dialog')openDialog('tap');
+}
+$('#bScreen').onclick=()=>openScreen('tap');
+$('#bDialog').onclick=()=>openDialog('tap');
+$('#bCode').onclick=()=>{
+  const b=$('#bCode'); b.disabled=true; let s=7;
+  $('#codeNote').textContent='Do not touch the screen. Opening in '+s+' s...';
+  const iv=setInterval(()=>{s--;$('#codeNote').textContent=s>0?'Do not touch the screen. Opening in '+s+' s...':'Opened.';if(s<=0)clearInterval(iv);},1000);
+  setTimeout(()=>{openScreen('code, no tap');setTimeout(()=>{openScreen('code, no tap');b.disabled=false;},400);},7000);
+};
+
+/* ---------- root guard ---------- */
+let rootArmed=false,rootWatcher=null;
+function armRootCW(why){
+  try{
+    const w=new CloseWatcher(); rootWatcher=w;
+    w.onclose=()=>{C.rootCaught++;log('root guard caught a back swipe with nothing open (stayed in app)');counters();renderTest();armRootCW('re-armed');};
+    log('root guard armed ('+why+')');
+  }catch(e){log('!! root guard could not be armed: '+e);}
+}
+function armRoot(why){
+  if(rootArmed)return; rootArmed=true;
+  if(rootMode==='cw')armRootCW(why);
+  else if(rootMode==='hist'){history.pushState({root:1},'');log('root history entry pushed ('+why+')');}
+  else log('no root guard (mode C)');
+}
+document.addEventListener('click',()=>armRoot('first tap'),{once:true,capture:true});
+window.addEventListener('popstate',()=>{
+  C.popstates++; if(test)test.popstates++;
+  if(rootMode==='hist'&&stack.length===0){C.rootCaught++;log('popstate at root - absorbed by history guard, pushing a new entry');history.pushState({root:1},'');}
+  else log('!! popstate (browser history moved back) with '+stack.length+' open');
+  counters();renderTest();
+});
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='hidden'){C.hidden++;if(test)test.hidden++;log('!! app hidden - you left the app, or a back swipe exited it');}
+  else log('app visible again');
+  counters();renderTest();
+});
+
+$('#rootMode').value=rootMode;
+$('#rootMode').onchange=e=>{lsSet('backlab_root',e.target.value);location.reload();};
+
+/* ---------- tests ---------- */
+const TESTS=[
+ {id:1,title:'1. Three screens deep',opens:3,how:'Tap Start. Open screen, then "Open next screen" twice (3 screens). Swipe back 3 times, one swipe at a time. Expect: Screen 3, then 2, then 1.'},
+ {id:2,title:'2. Dialogs on a screen',opens:3,how:'Tap Start. Open screen, "Open native dialog", then "Open another dialog" (3 things). Swipe back 3 times.'},
+ {id:3,title:'3. Mixed, 5 deep',opens:5,how:'Tap Start. Open screen > sheet > screen > native dialog > another dialog. Swipe back 5 times.'},
+ {id:4,title:'4. Opened by code, no tap',opens:2,how:'Tap Start, then "Open 2 screens by code" and do not touch the screen until both appear. Swipe back. Expect 2 swipes; 1 swipe closing both is the known risk.'},
+ {id:5,title:'5. Back swipe at the main screen',opens:0,how:'Tap Start with nothing open. Swipe back once from the main screen. Then tap Finish. Expect: you stay in the app (guard A or B).'},
+ {id:6,title:'6. Fast swipes',opens:3,how:'Tap Start. Open 3 screens. Swipe back 3 times as fast as you can.'}
+];
+let sel=TESTS[0];
+function renderTestList(){
+  $('#tests').innerHTML='';
+  TESTS.forEach(t=>{
+    const b=document.createElement('button'); b.className='test'+(t===sel?' sel':'');
+    b.innerHTML=t.title; b.onclick=()=>{if(test)return;sel=t;renderTestList();renderTest();};
+    $('#tests').appendChild(b);
+  });
+}
+function renderTest(){
+  const p=$('#testPanel');
+  if(!test){
+    p.innerHTML='<p>'+sel.how+'</p><button class="big" id="bStart">Start test</button>';
+    $('#bStart').onclick=startTest; return;
+  }
+  p.innerHTML='<p><b>Running: '+sel.title+'</b></p><p>'+sel.how+'</p>'+
+   '<p class="dim">So far: opened '+test.opens+', closed by back swipe '+test.backCloses+', by button '+test.buttonCloses+', still open '+stack.length+'.</p>'+
+   '<button class="big" id="bFinish">Finish test</button>';
+  $('#bFinish').onclick=finishTest;
+}
+function startTest(){
+  test={t:sel,opens:0,backCloses:0,buttonCloses:0,order:0,grouped:0,popstates:0,hidden:0,rootCaught0:C.rootCaught,gestures0:C.gestures};
+  log('=== test started: '+sel.title+' ===');
+  renderTest();
+}
+function finishTest(){
+  if(stack.length){log('(finish ignored: '+stack.length+' still open - close them first)');$('#testPanel').insertAdjacentHTML('beforeend','<p><b class="warn">'+stack.length+' still open. Swipe back until none are left, then tap Finish.</b></p>');return;}
+  const t=test, def=t.t, issues=[], notes=[];
+  const swipes=C.gestures-t.gestures0;
+  if(def.opens>0){
+    if(t.opens<def.opens)issues.push('only '+t.opens+' things were opened, the test needs '+def.opens);
+    if(t.backCloses<t.opens-t.buttonCloses)issues.push('some things did not close by back swipe');
+    if(t.order)issues.push(t.order+' closed in the wrong order');
+    if(t.grouped)issues.push('one swipe closed several things at once ('+t.grouped+' extra)');
+    if(swipes!==t.backCloses&&!t.grouped)issues.push('swipe count did not match');
+    if(t.popstates)issues.push(t.popstates+' extra browser-history moves');
+    if(t.hidden)issues.push('the app left the screen '+t.hidden+' time(s)');
+  }else{
+    const caught=C.rootCaught-t.rootCaught0;
+    notes.push('root guard caught '+caught+' swipe(s); app left screen '+t.hidden+' time(s)');
+    if(rootMode!=='none'){
+      if(t.hidden)issues.push('the swipe left the app even with the guard on');
+      if(!caught&&!t.hidden)issues.push('no swipe was seen - did you swipe back once?');
+    }else notes.push(t.hidden?'unguarded: the swipe left the app (expected for mode C)':'unguarded: the swipe did not leave the app');
+  }
+  const r={test:def.title,mode:rootMode,verdict:issues.length?'PROBLEM':(rootMode==='none'&&def.opens===0?'INFO':'PASS'),issues,notes,
+    detail:'opened '+t.opens+', back-closed '+t.backCloses+', button-closed '+t.buttonCloses+', swipes '+swipes+', popstate '+t.popstates+', left app '+t.hidden};
+  results.push(r); lsSet('backlab_results',results);
+  log('=== test finished: '+def.title+' -> '+r.verdict+' ('+r.detail+') '+issues.join('; ')+' ===');
+  test=null; renderTest(); renderResults();
+}
+function renderResults(){
+  if(!results.length){$('#results').textContent='No tests finished yet.';return;}
+  $('#results').innerHTML=results.slice().reverse().map(r=>{
+    const c=r.verdict==='PASS'?'pass':(r.verdict==='INFO'?'info':'fail');
+    return '<div class="res '+c+'"><b>'+r.verdict+'</b> - '+r.test+' <span class="dim">(guard '+r.mode+')</span><br><span class="dim">'+r.detail+'</span>'+
+      (r.issues.length?'<br><b class="bad">'+r.issues.join('; ')+'</b>':'')+(r.notes.length?'<br><span class="dim">'+r.notes.join('; ')+'</span>':'')+'</div>';
+  }).join('');
+}
+function reportText(){
+  return ['BackLab '+VER+' report','Chrome '+((navigator.userAgent.match(/Chrome\/([\d.]+)/)||[])[1]||'?'),'Installed mode: '+envStandalone(),'CloseWatcher: '+!!window.CloseWatcher,'Root guard: '+rootMode,'',
+   'RESULTS']
+   .concat(results.map(r=>r.verdict+' | '+r.test+' | guard '+r.mode+' | '+r.detail+(r.issues.length?' | '+r.issues.join('; '):'')+(r.notes.length?' | '+r.notes.join('; '):'')))
+   .concat(['','LOG (last 80)'],LOG.slice(-80)).join('\n');
+}
+$('#bCopy').onclick=async()=>{
+  const txt=reportText();
+  try{await navigator.clipboard.writeText(txt);$('#copyNote').textContent='Copied. Paste it into the chat.';}
+  catch(e){$('#copyNote').innerHTML='Could not copy automatically. Select the text below and copy it.<textarea style="width:100%;height:160px;margin-top:6px">'+txt.replace(/</g,'&lt;')+'</textarea>';}
+};
+$('#bClear').onclick=()=>{results=[];LOG=[];lsSet('backlab_results',results);lsSet('backlab_log',LOG);$('#log').textContent='';renderResults();$('#copyNote').textContent='Cleared.';};
+
+/* ---------- start ---------- */
+renderTestList(); renderTest(); renderResults(); counters();
+log('BackLab '+VER+' loaded. installed='+envStandalone()+' CloseWatcher='+!!window.CloseWatcher+' root guard='+rootMode+' history='+history.length);
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js',{scope:'./'}).catch(e=>log('worker: '+e));
+</script>
+</body>
+</html>
