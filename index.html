@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v759';
+const APP_VERSION='v760';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7009,6 +7009,40 @@ function _windCloseBatch(){
       log(`forecast batch: ${bt.ok} ok, ${bt.fail} failed${kinds?' ('+kinds+')':''}${bt.skipped?', '+bt.skipped+' not sent after repeated failures':''}${bt.r429?', '+bt.r429+' retried after 429':''}${bt.retry?', '+bt.retry+' asked a second time at once ('+bt.retryOk+' of them ok)':''}, took ${((Date.now()-bt.t0)/1000).toFixed(1)} s, app ${document.visibilityState}${bt.okMs.length?', replies took '+Math.min.apply(null,bt.okMs)+'-'+Math.max.apply(null,bt.okMs)+' ms':''}`);
   }catch(_){}
 }
+// v760: DIAGNOSTIC ONLY - changes nothing about how forecasts load. When a forecast request gives up with no reply
+// at all (timeout / network error), three small test requests are made side by side, ONCE per episode (not once per
+// failed site; a new episode needs 2 minutes without one), and what each one did is written to the log:
+//  1. github.com (tiny reply)  2. Open-Meteo, current wind only  3. the normal LeeSide forecast request, sent
+// straight from here (no queue, no retry, no app cache). Each records time to first reply, time to full body,
+// and the status or exact error. Telling these apart shows whether the whole connection is stalled or only one host.
+let _fgAt=Date.now(),_diagAt=0;
+async function _diagProbe(name,url,tmoMs){
+  const t0=performance.now();let hdr=null,body=null,st='',bytes=0;
+  const ac=new AbortController();const tm=setTimeout(()=>{try{ac.abort();}catch(_){}},tmoMs);
+  try{
+    const r=await fetch(url,{cache:'no-store',signal:ac.signal});
+    hdr=Math.round(performance.now()-t0);st='HTTP '+r.status;
+    const b=await r.arrayBuffer();bytes=b.byteLength;body=Math.round(performance.now()-t0);
+  }catch(e){
+    st=(hdr===null?'no reply: ':'body cut off: ')+((e&&e.name)||'error')+((e&&e.message)?' ('+e.message+')':'')+' after '+Math.round(performance.now()-t0)+' ms';
+  }finally{clearTimeout(tm);}
+  return name+': first reply '+(hdr===null?'never':hdr+' ms')+', full body '+(body===null?'never':body+' ms')+', '+st+(bytes?', '+bytes+' B':'');
+}
+function _windDiag(url,kind){
+  try{
+    const now=Date.now();
+    if(now-_diagAt<120000)return;
+    _diagAt=now;
+    const c=navigator.connection||{};
+    const ctx='page '+document.visibilityState+', '+Math.round((now-_fgAt)/1000)+' s since foreground return, '+Math.round(performance.now()/1000)+' s since app start, service worker controls page: '+((navigator.serviceWorker&&navigator.serviceWorker.controller)?'yes':'no')+', online='+navigator.onLine+', connection '+(c.type||'?')+'/'+(c.effectiveType||'?')+' rtt '+(c.rtt==null?'?':c.rtt)+' downlink '+(c.downlink==null?'?':c.downlink);
+    log('diag: forecast stall ('+kind+') - sending 3 test requests. '+ctx);
+    Promise.all([
+      _diagProbe('github','https://api.github.com/zen',15000),
+      _diagProbe('open-meteo current-only','https://api.open-meteo.com/v1/forecast?latitude=37.8&longitude=-122.3&current=wind_speed_10m',15000),
+      _diagProbe('leeside forecast direct',url,15000)
+    ]).then(r=>{log('diag: '+r.join(' | '));try{_logUploadSoon();}catch(_){}}).catch(()=>{});
+  }catch(_){}
+}
 function _windNoteFail(coords,kind,ms){
   const bt=_windBatch;if(!bt)return;
   bt.fail++;bt.kinds[kind]=(bt.kinds[kind]||0)+1;
@@ -7114,6 +7148,7 @@ async function _windAttempt(url,timeoutMs,canRetry,isRetry,canInline){
   }finally{
     if(tm)clearTimeout(tm);
     if(result){_windRtt.push({t:Date.now(),ms:Date.now()-t0});if(_windRtt.length>WIND_EVIDENCE_KEEP)_windRtt.shift();}
+    if(!result&&status===0)_windDiag(url,kind); // v760: diagnostic only (see _windDiag)
     if(!result&&status===429&&canRetry){retry429=true;_windRetrying++;} // counted BEFORE the slot is freed so the batch summary stays open during the pause
     else if(!result&&canInline&&(status===0||status>=500))retryNow=true; // v758: the slot is given back at once; the second try queues behind waiting first tries
     _windRelease();
@@ -13318,6 +13353,7 @@ document.addEventListener('visibilitychange',async()=>{
   // Coming back to the foreground — stop the background-only check, it has no purpose while visible
   if(_bgRefreshInterval){clearInterval(_bgRefreshInterval);_bgRefreshInterval=null;}
   // the 'online' event may have fired and been missed while backgrounded
+  _fgAt=Date.now(); // v760: for the stall diagnostic only
   log(`event: app returned to foreground (canSync=${canSync()}, token=${accessToken?'yes':'no'})`);
   _logUploadSoon(); // v750
   _refreshSitesForecastOnReturn();
