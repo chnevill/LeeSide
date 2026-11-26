@@ -8751,15 +8751,14 @@ function showNoteView(nid,siteKey){
     // Checking for a real value instead means a prior failed attempt never
     // blocks the retry below from actually trying again.
     const distKnown=_curUuid&&_siteDistCache[_curUuid]!=null;
-    const _wk=_curUuid?_windDataCache[_curUuid]:null;
-    const windKnown=!!_wk&&(!_wk.at||Date.now()-_wk.at<WIND_STALE_MS); // v761: a forecast older than WIND_STALE_MS is not shown
+    const _bkNow=curCoords?_windBestKnown(curCoords):null; // v761: the newest forecast we hold (memory or saved) with its age; one older than WIND_STALE_MS is never returned
     // Gated on curCoords too, not just windKnown - a site that once had
     // coordinates (and a real cached wind reading from back then) but has
     // since had them removed would otherwise keep showing that now-stale
     // reading forever, since removing coordinates doesn't clear this cache
     // on its own (e.g. if the removal happened via sync from another device
     // while this exact screen stayed open here).
-    const w=(windKnown&&curCoords)?_windDataCache[_curUuid]:null;
+    const w=_bkNow?_bkNow.data:null;
     const buildWindBlock=w=>{
       if(!w)return'';
       const inner=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}${(w.at&&Date.now()-w.at>=WIND_CACHE_MS)?` <span style="color:var(--text3);font-size:11px">saved ${_windAgeText(Date.now()-w.at)}</span>`:''}</span>`;
@@ -8818,19 +8817,42 @@ function showNoteView(nid,siteKey){
         if(slot)slot.textContent=fmtDistance(distKm)+' away';
       });
     }
-    if(!windKnown&&curCoords){
-      fetchSiteWind(curCoords,false).then(w2=>{
-        const freshCoords=_curUuid?siteCoordsByUuid[_curUuid]:null;
-        if(!freshCoords)return; // coordinates removed while this was in flight - w2 was computed from coordinates that no longer apply, so don't cache or display it
-        _windDataCache[_curUuid]=w2;
-        if(editSiteKey!==_navKey)return; // navigated away before this resolved
+    // v761: a forecast that is missing, expired, or WIND_CACHE_MS old or older is asked for again through the SAME function the
+    // Sites list uses (fetchSiteWind: shares a request already running, honours the cooldown after a failure, uses the queue).
+    // The saved forecast stays on screen, with its age, until a fresh one arrives; one older than WIND_STALE_MS is never shown.
+    // A once-a-minute tick keeps the age label and the expiry correct while the screen stays open, and asks again (at most every
+    // 5 minutes, only while the page is visible) if the forecast is still stale.
+    if(window._windDetailTimer){clearInterval(window._windDetailTimer);window._windDetailTimer=null;}
+    if(curCoords){
+      let _lastTry=0;
+      const paintDetail=()=>{
+        if(editSiteKey!==_navKey)return false;
         const slot=document.getElementById('noteViewWindSlot');
-        if(slot)slot.innerHTML=buildWindBlock(w2);
-        if(!isDesktopPlatform){
-          const titleEl=document.getElementById('noteViewTitle');
-          if(titleEl)titleEl.style.paddingRight=w2?'90px':'0';
-        }
-      });
+        const fc=_curUuid?siteCoordsByUuid[_curUuid]:null;
+        if(!slot||!fc)return false;
+        const bk=_windBestKnown(fc);
+        slot.innerHTML=buildWindBlock(bk?bk.data:null);
+        if(!isDesktopPlatform){const titleEl=document.getElementById('noteViewTitle');if(titleEl)titleEl.style.paddingRight=bk?'90px':'0';}
+        return true;
+      };
+      const refreshDetail=()=>{
+        _lastTry=Date.now();
+        const fc=_curUuid?siteCoordsByUuid[_curUuid]:null;
+        if(!fc)return;
+        fetchSiteWind(fc,false).then(w2=>{
+          const nowC=_curUuid?siteCoordsByUuid[_curUuid]:null;
+          if(!nowC||nowC!==fc)return; // coordinates removed or changed while this was in flight - don't cache or display it
+          if(w2)_windDataCache[_curUuid]=w2;
+          paintDetail();
+        });
+      };
+      if(!_bkNow||_bkNow.age>=WIND_CACHE_MS)refreshDetail();
+      window._windDetailTimer=setInterval(()=>{
+        const _ov=document.getElementById('noteViewOverlay');if(editSiteKey!==_navKey||!document.getElementById('noteViewWindSlot')||!_ov||!_ov.classList.contains('open')){clearInterval(window._windDetailTimer);window._windDetailTimer=null;return;}
+        paintDetail();
+        const fc=_curUuid?siteCoordsByUuid[_curUuid]:null,bk=fc?_windBestKnown(fc):null;
+        if(!document.hidden&&(!bk||bk.age>=WIND_CACHE_MS)&&Date.now()-_lastTry>=300000)refreshDetail();
+      },60000);
     }
     const mapBtn=document.getElementById('noteViewMapBtn');
     if(mapBtn)mapBtn.onclick=()=>{closeOverlay('noteViewOverlay');openSiteMapView(_curUuid||curName,_curUuid||curName);};
