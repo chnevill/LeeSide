@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v748';
+const APP_VERSION='v749';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6832,12 +6832,12 @@ async function fetchSiteWind(coords,force,timeoutMs){
   if(!coords)return null;
   const cached=_windCache[coords];
   if(!force&&cached&&Date.now()-cached.fetchedAt<WIND_CACHE_MS)return cached.data;
-  if(!force&&_windInflight[coords])return _windInflight[coords];
+  if(_windInflight[coords])return _windInflight[coords]; // v749: asking again - pull-down included - joins the request already queued or running for this site; force skips only the saved result and the cooldown
   if(!force&&_windFailAt[coords]&&Date.now()-_windFailAt[coords]<WIND_FAIL_COOLDOWN_MS)return null; // v746: failed a moment ago - don't start another round yet
   _windTried[coords]=true;
   const p=_fetchSiteWindNet(coords,!!force,timeoutMs||WIND_TIMEOUT_MS);
   _windInflight[coords]=p;
-  p.then(()=>{if(_windInflight[coords]===p)delete _windInflight[coords];});
+  const _done=()=>{if(_windInflight[coords]===p)delete _windInflight[coords];};p.then(_done,_done);
   return p;
 }
 // v706: forecast requests go out at most WIND_MAX_PARALLEL at a time, nearest site first (the
@@ -6898,54 +6898,86 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=WIND_TIMEOUT_MS){
     // both directions of this tradeoff are already known and were weighed
     // deliberately.
     const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
-  let attempt=0;
-  while(true){
-    await _windSlot();
-    const ac=new AbortController();
-    const tm=setTimeout(()=>ac.abort(),timeoutMs);
-    const t0=Date.now();
-    let status=0,j=null,kind='';
-    try{
-      const r=await fetch(url,{signal:ac.signal});
-      status=r.status;
-      if(r.ok){const txt=await r.text();try{recordForecastBytes(byteLen(txt));}catch(_){} /* v680 data-usage counter */ j=JSON.parse(txt);}
-    }catch(e){
-      kind=(e&&e.name==='AbortError')?('timed out ('+Math.round(timeoutMs/1000)+' s)'):'network error ('+((e&&e.message)||'unknown')+')';
+  // v749: a slot taken from the queue is ALWAYS given back (see _windAttempt), and a 429 pause happens
+  // outside the slot. Nothing in here can throw out to the caller: a site that can't be fetched
+  // simply comes back null.
+  try{
+    let attempt=0;
+    while(true){
+      const a=await _windAttempt(url,timeoutMs,attempt<1);
+      if(a.result){
+        const result=a.result;
+        delete _windFailAt[coords];
+        _windCache[coords]={data:result,fetchedAt:Date.now()};
+        _windSaved[coords]={data:result,t:Date.now(),unit:windUnitParam()};_windSaveSoon(); // v727
+        if(_windBatch){_windBatch.ok++;_windBatch.okMs.push(a.ms);}
+        return result;
+      }
+      if(a.retry429){
+        attempt++;
+        if(_windBatch)_windBatch.r429++;
+        try{await new Promise(r=>setTimeout(r,4000+Math.floor(Math.random()*2000)));}
+        finally{_windRetrying--;}
+        continue;
+      }
+      _windFailAt[coords]=Date.now();
+      _windNoteFail(coords,a.status?('HTTP '+a.status):(a.kind||'no current data in reply'),a.ms);
+      return null;
     }
-    clearTimeout(tm);
-    const ms=Date.now()-t0;
-    if(j&&j.current){
-      const result={
-        speed:Math.round(j.current.wind_speed_10m),
-        gust:Math.round(j.current.wind_gusts_10m),
-        dir:j.current.wind_direction_10m,
-        weatherCode:j.current.weather_code,
-        utcOffsetSeconds:j.utc_offset_seconds||0,
-        hourly:(j.hourly&&j.hourly.time)?j.hourly.time.map((t,i)=>({time:t,speed:j.hourly.wind_speed_10m[i],dir:j.hourly.wind_direction_10m[i],gust:j.hourly.wind_gusts_10m[i]})):[],
-        daily:(j.daily&&j.daily.time)?j.daily.time.map((t,i)=>({date:t,speed:j.daily.wind_speed_10m_max[i],gust:j.daily.wind_gusts_10m_max[i]})):[]
-      };
-      delete _windFailAt[coords];
-      _windCache[coords]={data:result,fetchedAt:Date.now()};
-      _windSaved[coords]={data:result,t:Date.now(),unit:windUnitParam()};_windSaveSoon(); // v727
-      if(_windBatch){_windBatch.ok++;_windBatch.okMs.push(ms);}
-      _windRelease();
-      return result;
-    }
-    if(!kind)kind=status?('HTTP '+status):'no current data in reply';
-    if(status===429&&attempt<1){
-      attempt++;
-      if(_windBatch)_windBatch.r429++;
-      _windRetrying++;
-      _windRelease();
-      await new Promise(r=>setTimeout(r,4000+Math.floor(Math.random()*2000)));
-      _windRetrying--;
-      continue;
-    }
+  }catch(e){
     _windFailAt[coords]=Date.now();
-    _windNoteFail(coords,status?('HTTP '+status):kind,ms);
-    _windRelease();
+    try{_windNoteFail(coords,'internal error ('+((e&&e.message)||'unknown')+')',0);}catch(_){}
     return null;
   }
+}
+// v749: ONE attempt at ONE forecast request. Takes a queue slot, always gives it back (finally), and
+// never throws. A reply that is cut off, isn't JSON, or is missing parts of the forecast is a failure
+// of that one site only - the slot is still released and the other sites carry on.
+async function _windAttempt(url,timeoutMs,canRetry){
+  await _windSlot();
+  let status=0,result=null,kind='',retry429=false,tm=null;
+  const t0=Date.now();
+  try{
+    const ac=new AbortController();
+    tm=setTimeout(()=>ac.abort(),timeoutMs);
+    const r=await fetch(url,{signal:ac.signal});
+    status=r.status;
+    if(r.ok){
+      const txt=await r.text();
+      try{recordForecastBytes(byteLen(txt));}catch(_){} /* v680 data-usage counter */
+      result=_windParse(JSON.parse(txt));
+      if(!result)kind='no current data in reply';
+    }
+  }catch(e){
+    result=null;
+    kind=(e&&e.name==='AbortError')?('timed out ('+Math.round(timeoutMs/1000)+' s)'):
+         (e&&e.name==='SyntaxError')?'reply was not readable':
+         'network error ('+((e&&e.message)||'unknown')+')';
+  }finally{
+    if(tm)clearTimeout(tm);
+    if(!result&&status===429&&canRetry){retry429=true;_windRetrying++;} // counted BEFORE the slot is freed so the batch summary stays open during the pause
+    _windRelease();
+  }
+  return{result,status,kind,retry429,ms:Date.now()-t0};
+}
+// v749: turns Open-Meteo's reply into the app's forecast object. Same fields as before; a reply
+// that has the current reading but incomplete hourly/daily lists gives empty lists for those
+// (the same as a reply with no hourly/daily section at all) instead of throwing. Returns null when
+// there is no current reading.
+function _windParse(j){
+  if(!j||!j.current||typeof j.current!=='object')return null;
+  const h=j.hourly,d=j.daily;
+  const hOk=h&&Array.isArray(h.time)&&Array.isArray(h.wind_speed_10m)&&Array.isArray(h.wind_direction_10m)&&Array.isArray(h.wind_gusts_10m);
+  const dOk=d&&Array.isArray(d.time)&&Array.isArray(d.wind_speed_10m_max)&&Array.isArray(d.wind_gusts_10m_max);
+  return{
+    speed:Math.round(j.current.wind_speed_10m),
+    gust:Math.round(j.current.wind_gusts_10m),
+    dir:j.current.wind_direction_10m,
+    weatherCode:j.current.weather_code,
+    utcOffsetSeconds:j.utc_offset_seconds||0,
+    hourly:hOk?h.time.map((t,i)=>({time:t,speed:h.wind_speed_10m[i],dir:h.wind_direction_10m[i],gust:h.wind_gusts_10m[i]})):[],
+    daily:dOk?d.time.map((t,i)=>({date:t,speed:d.wind_speed_10m_max[i],gust:d.wind_gusts_10m_max[i]})):[]
+  };
 }
 // Warms the exact same two caches Sites' own render already reads from
 // (the browser's own geolocation cache via getCurrentLocation, and
