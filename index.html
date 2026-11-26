@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v753';
+const APP_VERSION='v754';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -8381,7 +8381,7 @@ function _paintSiteWind(uuid,w,staleMs){
   const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
   if(slot){
     if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>';} // v701: the Windy link stays visible without a forecast
-    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>${staleMs>=WIND_CACHE_MS?`<span style="display:block;color:var(--text3);font-size:11px">saved ${_windAgeText(staleMs)}</span>`:''}`;}
+    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;position:relative;color:var(--text2);font-size:14px">gust ${w.gust}${staleMs>=WIND_CACHE_MS?`<span style="position:absolute;right:100%;margin-right:8px;top:50%;transform:translateY(-50%);white-space:nowrap;color:var(--text3);font-size:11px">saved ${_windAgeText(staleMs)}</span>`:''}</span>`;}
   }
   const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
   if(accentEl)accentEl.style.background=w?windSpeedToColor(w.speed):'transparent';
