@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v758';
+const APP_VERSION='v759';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -2082,8 +2082,23 @@ function renderDebugPanel(){
         _logUpState='sending...';_logUpRefreshBtn();_logUploadNow();
       }else{try{localStorage.removeItem('leeside_logToken');}catch(e){}_logUpSha=null;_logUpState='not set up';_logUpRefreshBtn();}
     };
+    const fileBtn=document.createElement('button'); // v759: the whole log as a text file (too long to paste into a chat)
+    fileBtn.textContent='Save file';
+    fileBtn.style.cssText='flex:1;background:transparent;color:#0f0;border:1px solid #0f0;border-radius:4px;padding:6px;font-family:monospace;font-size:11px;';
+    fileBtn.onclick=()=>{
+      try{
+        const d=new Date(),z=n=>String(n).padStart(2,'0');
+        const name='leeside-log-'+d.getFullYear()+z(d.getMonth()+1)+z(d.getDate())+'-'+z(d.getHours())+z(d.getMinutes())+'.txt';
+        const text='LeeSide log | '+APP_VERSION+' | saved '+d.toISOString()+' | '+navigator.userAgent+'\n'+dbg.join('\n')+'\n';
+        const url=URL.createObjectURL(new Blob([text],{type:'text/plain'}));
+        const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),10000);
+        fileBtn.textContent='Saved';setTimeout(()=>{fileBtn.textContent='Save file';},1500);
+      }catch(e){fileBtn.textContent='Save failed';setTimeout(()=>{fileBtn.textContent='Save file';},1500);}
+    };
     header.appendChild(copyBtn);
     header.appendChild(lastBtn);
+    header.appendChild(fileBtn);
     header.appendChild(remoteBtn);
     header.appendChild(closeBtn);
     const textEl=document.createElement('div');
