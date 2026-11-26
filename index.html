@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v750';
+const APP_VERSION='v751';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6842,10 +6842,19 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
 }
 let _windCache={}; // site -> {data, fetchedAt}
 const WIND_CACHE_MS=15*60*1000;
-const WIND_TIMEOUT_MS=5000; // v746: was 10 s - healthy replies take well under 2 s, so a request that hasn't answered in 5 s is given up on sooner
+const WIND_TIMEOUT_MS=10000; // v751: back to 10 s (v746 made it 5 s). On a weak signal a 5 s limit cancelled replies that would have arrived (11 of 21 requests in a simulated weak-signal test); 10 s delivered every site sooner with about half the requests
 const WIND_FAIL_COOLDOWN_MS=30000; // v746: a site whose forecast just failed isn't asked for again by a non-forced redraw for 30 s (stops repeated returns to the app piling up new rounds of requests); pull-down still forces a retry
 const SITE_WIND_FIRST=10; // v746: only the nearest 10 sites ask for a forecast up front; the rest ask as they scroll into view
 let _windFailAt={};
+// v749: automatic recovery. A site on Sites whose forecast failed (or came back without its hourly/daily lists) is asked
+// for again by itself while Sites stays open - first after about 20 s, then after 40 s, 80 s, 160 s and then every 5 minutes - instead of waiting
+// for the user to leave and come back. Only the sites that are missing a forecast are asked (nearest first, at most
+// SITE_WIND_FIRST per round), only while Sites is the visible tab, and it gives up after WIND_RECOVER_MAX_ROUNDS tries
+// in a row. Any real success, or the user opening/returning/pulling, starts the count again.
+const WIND_PARTIAL_RECHECK_MS=60*1000; // a reply that lacks its hourly/daily lists counts as fresh for only this long
+const WIND_RECOVER_MS=[20000,40000,80000,160000,300000];
+const WIND_RECOVER_MAX_ROUNDS=12;
+let _windRecoverTimer=null,_windRecoverN=0;
 let _siteWindObserver=null;
 // v727: the last good forecast for each site is also kept on this device (never synced to Drive) for up to
 // an hour. When a fresh forecast can't be fetched, the card shows the saved one with "updated N min ago"
@@ -6875,6 +6884,45 @@ function _windAgeText(ms){const m=Math.max(1,Math.round(ms/60000));return m<60?m
 // Open-Meteo request; _windTried records that a site has been asked for at least once, so a
 // redraw that is not about the forecast (see renderSiteNotesCardList's noFetch) never has to ask again.
 let _windInflight={}, _windTried={};
+function _windNeedsRetry(c){
+  const e=_windCache[c];
+  if(e&&Date.now()-e.fetchedAt<WIND_CACHE_MS)return false;
+  return !!_windFailAt[c]||!!(e&&e.data&&e.data.partial);
+}
+function _windRepaint(coords,w){
+  _windUuidsFor(coords).forEach(uuid=>{
+    if(w)_paintSiteWind(uuid,w);
+    else{const sv=_windSavedFor(coords);if(sv)_paintSiteWind(uuid,sv.data,sv.age);else _paintSiteWind(uuid,null);}
+  });
+}
+function _scheduleWindRecovery(){
+  if(_windRecoverTimer||_windRecoverN>=WIND_RECOVER_MAX_ROUNDS)return;
+  const delay=WIND_RECOVER_MS[Math.min(_windRecoverN,WIND_RECOVER_MS.length-1)]+Math.floor(Math.random()*2000);
+  _windRecoverTimer=setTimeout(_windRecoverRound,delay);
+}
+async function _windRecoverRound(){
+  _windRecoverTimer=null;
+  try{
+    if(currentTab!=='sites'||document.hidden)return; // not looking at Sites - the next visit starts fresh
+    const tabEl=document.getElementById('tab-sites');
+    if(!tabEl||!tabEl.classList.contains('active'))return;
+    const sinp=document.getElementById('siteSearchInput');
+    if(sinp&&sinp.value.trim())return;
+    const todo=[],seen=new Set();
+    for(const u of (_siteNoteOrder||[])){
+      const c=siteCoordsByUuid[u];
+      if(!c||seen.has(c))continue;
+      seen.add(c);
+      if(_windTried[c]&&_windNeedsRetry(c))todo.push(c);
+      if(todo.length>=SITE_WIND_FIRST)break;
+    }
+    if(!todo.length){_windRecoverN=0;return;}
+    _windRecoverN++;
+    const res=await Promise.all(todo.map(c=>fetchSiteWind(c,true))); // force: this timer is its own pacing, so the 30 s cooldown does not apply (a request already queued or running is still joined, not doubled)
+    todo.forEach((c,i)=>_windRepaint(c,res[i]));
+    if(todo.some(_windNeedsRetry))_scheduleWindRecovery();else _windRecoverN=0;
+  }catch(e){}
+}
 async function fetchSiteWind(coords,force,timeoutMs){
   if(!coords)return null;
   const cached=_windCache[coords];
@@ -6954,9 +7002,11 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=WIND_TIMEOUT_MS){
     while(true){
       const a=await _windAttempt(url,timeoutMs,attempt<1);
       if(a.result){
-        const result=a.result;
+        const result=a.result.partial?_windMergePartial(coords,a.result):a.result;
+        result.at=Date.now();
         delete _windFailAt[coords];
-        _windCache[coords]={data:result,fetchedAt:Date.now()};
+        _windCache[coords]={data:result,fetchedAt:result.partial?Date.now()-(WIND_CACHE_MS-WIND_PARTIAL_RECHECK_MS):Date.now()};
+        if(result.partial)_scheduleWindRecovery();else _windRecoverN=0;
         _windSaved[coords]={data:result,t:Date.now(),unit:windUnitParam()};_windSaveSoon(); // v727
         if(_windBatch){_windBatch.ok++;_windBatch.okMs.push(a.ms);}
         return result;
@@ -6970,11 +7020,13 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=WIND_TIMEOUT_MS){
       }
       _windFailAt[coords]=Date.now();
       _windNoteFail(coords,a.status?('HTTP '+a.status):(a.kind||'no current data in reply'),a.ms);
+      _scheduleWindRecovery();
       return null;
     }
   }catch(e){
     _windFailAt[coords]=Date.now();
     try{_windNoteFail(coords,'internal error ('+((e&&e.message)||'unknown')+')',0);}catch(_){}
+    try{_scheduleWindRecovery();}catch(_){}
     return null;
   }
 }
@@ -7012,6 +7064,19 @@ async function _windAttempt(url,timeoutMs,canRetry){
 // that has the current reading but incomplete hourly/daily lists gives empty lists for those
 // (the same as a reply with no hourly/daily section at all) instead of throwing. Returns null when
 // there is no current reading.
+// v749: a reply with the current reading but without its hourly/daily lists must not wipe out a good hourly/daily
+// forecast we already hold for that site. The current reading is the new one; the missing lists are carried over
+// from the previous forecast (never older than WIND_STALE_MS) and marked with hourlyAt so the card says how old they are.
+function _windMergePartial(coords,r){
+  const c=_windCache[coords],s=_windSaved[coords];
+  const cands=[];
+  if(c&&c.data)cands.push(c.data);
+  if(s&&s.data&&s.unit===windUnitParam())cands.push(Object.assign({},s.data,{at:s.data.at||s.t}));
+  const ok=d=>Date.now()-(d.hourlyAt||d.at||0)<WIND_STALE_MS;
+  if(!r.hourly.length){const p=cands.find(d=>d.hourly&&d.hourly.length&&ok(d));if(p){r.hourly=p.hourly;r.hourlyAt=p.hourlyAt||p.at;}}
+  if(!r.daily.length){const p=cands.find(d=>d.daily&&d.daily.length&&ok(d));if(p){r.daily=p.daily;r.hourlyAt=r.hourlyAt||p.hourlyAt||p.at;}}
+  return r;
+}
 function _windParse(j){
   if(!j||!j.current||typeof j.current!=='object')return null;
   const h=j.hourly,d=j.daily;
@@ -7023,6 +7088,7 @@ function _windParse(j){
     dir:j.current.wind_direction_10m,
     weatherCode:j.current.weather_code,
     utcOffsetSeconds:j.utc_offset_seconds||0,
+    partial:!(hOk&&dOk), // v749: true when the reply had the current reading but not both lists
     hourly:hOk?h.time.map((t,i)=>({time:t,speed:h.wind_speed_10m[i],dir:h.wind_direction_10m[i],gust:h.wind_gusts_10m[i]})):[],
     daily:dOk?d.time.map((t,i)=>({date:t,speed:d.wind_speed_10m_max[i],gust:d.wind_gusts_10m_max[i]})):[]
   };
@@ -7330,7 +7396,7 @@ function renderOneWindBar(containerEl,windData){
   if(toggleEl)toggleEl.textContent=_windGranularity;
   const scrollEl=containerEl.querySelector('[data-windscroll]');
   if(!scrollEl)return;
-  if(!bar){scrollEl.innerHTML='<div style="color:var(--text3);font-size:12px;padding:4px 0">No forecast data</div>';return;}
+  if(!bar){scrollEl.innerHTML=`<div style="color:var(--text3);font-size:12px;padding:4px 0">${windData&&windData.partial?'Hourly forecast unavailable right now':'No forecast data'}</div>`;return;}
   scrollEl.innerHTML=`
     <div style="width:${bar.totalWidthPx}px">
       <div style="position:relative;height:19px;border-radius:5px;background:${bar.gradient}">
@@ -7348,6 +7414,7 @@ function renderOneWindBar(containerEl,windData){
       ${bar.dayLabels.length?`<div style="position:relative;height:14px;margin-top:1px">
         ${bar.dayLabels.map(d=>`<span style="position:absolute;left:${d.percent.toFixed(2)}%;font-size:11px;font-weight:700;color:var(--text2);white-space:nowrap">${d.text}</span>`).join('')}
       </div>`:''}
+      ${windData.hourlyAt&&Date.now()-windData.hourlyAt>=300000?`<div style="font-size:11px;color:var(--text3);margin-top:3px;white-space:nowrap">Hourly forecast from ${_windAgeText(Date.now()-windData.hourlyAt)}</div>`:''}
     </div>`;
   if(!_windScrollIsFresh&&_windScrollTouchedAt&&Date.now()-_windScrollTouchedAt>WIND_SLIDER_STALE_MS)_windScrollIsFresh=true; // position is old - go back to now
   if(_windScrollIsFresh&&bar.nowPercent!=null){
@@ -8321,6 +8388,7 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
   q=q.trim();
   const listEl=document.getElementById('siteNotesCardList');
   if(!listEl)return;
+  if(!noFetch)_windRecoverN=0; // v749: opening, returning, pulling down: the automatic-retry count starts again
   const loc=await getCurrentLocation(force);
   // v667: no location this time (slow GPS fix, timeout) - quietly try again a couple of times, the same
   // fresh lookup a pull-down does, instead of leaving "Location unavailable" until the user pulls.
