@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v757';
+const APP_VERSION='v758';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6859,7 +6859,7 @@ function _windStallMs(){
   return Math.min(WIND_TIMEOUT_MS,Math.max(WIND_STALL_MIN_MS,slowest*4));
 }
 const WIND_FAIL_COOLDOWN_MS=30000; // v746: a site whose forecast just failed isn't asked for again by a non-forced redraw for 30 s (stops repeated returns to the app piling up new rounds of requests); pull-down still forces a retry
-const SITE_WIND_FIRST=10; // v746: only the nearest 10 sites ask for a forecast up front; the rest ask as they scroll into view
+const SITE_WIND_FIRST=15; // v758 (was 10 in v746, 15 in v685): only the nearest 15 sites ask for a forecast up front; the rest ask as they scroll into view
 let _windFailAt={};
 // v749: automatic recovery. A site on Sites whose forecast failed (or came back without its hourly/daily lists) is asked
 // for again by itself while Sites stays open - first after about 20 s, then after 40 s, 80 s, 160 s and then every 5 minutes - instead of waiting
@@ -6962,17 +6962,18 @@ async function fetchSiteWind(coords,force,timeoutMs){
 // a one-line summary of each batch, is written to the debug log.
 const WIND_MAX_PARALLEL=4;
 let _windActive=0;
-const _windQueue=[];
+const _windQueue=[]; // first tries
+const _windRetryQueue=[]; // v758: second tries - always served after every waiting first try
 let _windBatch=null;
 let _windSites=0; // v757: sites with a forecast request in progress (first try, second try or 429 pause). The batch summary is written only when this reaches 0, so the last site's result is counted in it.
 let _windRetrying=0; // sites currently waiting out a 429 pause - keeps the batch (and its one summary line) open
 function _windNewBatch(){return{t0:Date.now(),ok:0,fail:0,skipped:0,r429:0,kinds:{},logged:0,okMs:[],retry:0,retryOk:0};}
 function _windPump(){
-  while(_windActive<WIND_MAX_PARALLEL&&_windQueue.length){_windActive++;_windQueue.shift()();}
+  while(_windActive<WIND_MAX_PARALLEL&&(_windQueue.length||_windRetryQueue.length)){_windActive++;(_windQueue.length?_windQueue:_windRetryQueue).shift()();}
 }
-function _windSlot(front){
+function _windSlot(isRetry){
   if(!_windBatch)_windBatch=_windNewBatch();
-  return new Promise(res=>{if(front)_windQueue.unshift(res);else _windQueue.push(res);_windPump();}); // v756: a site's second try goes to the front of the line, it does not wait behind the other sites' first tries
+  return new Promise(res=>{(isRetry?_windRetryQueue:_windQueue).push(res);_windPump();}); // v758: a second try waits behind the other sites' first tries
 }
 function _windRelease(){
   _windActive--;
@@ -6982,7 +6983,7 @@ function _windSiteDone(){ // v757: called after a site's result has been counted
   _windSites--;
   if(_windSites<=0){
     _windSites=0;
-    if(_windBatch&&_windActive===0&&!_windQueue.length&&!_windRetrying)_windCloseBatch();
+    if(_windBatch&&_windActive===0&&!_windQueue.length&&!_windRetryQueue.length&&!_windRetrying)_windCloseBatch();
   }
 }
 function _windCloseBatch(){
@@ -7023,13 +7024,11 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=0){
   // simply comes back null.
   if(!_windBatch)_windBatch=_windNewBatch();
   _windSites++;
-  let held=false; // a slot kept for this site's second try
   try{
     let attempt=0,second=false,firstLimit=WIND_TIMEOUT_MS;
     while(true){
       let a;
       if(second){ // v756/v757: the immediate second try - runs in the slot the first try held, longer limit, never a third
-        held=false; // from here the second try owns the slot and always gives it back
         a=await _windAttempt(url,firstLimit<WIND_TIMEOUT_MS?WIND_RETRY_TIMEOUT_MS:WIND_TIMEOUT_MS,false,true,false); // generous after an early give-up (the connection may just be slow); same as a normal try after a full-length wait
       }else a=await _windAttempt(url,timeoutMs,attempt<1,false,true);
       if(a.result){
@@ -7043,7 +7042,7 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=0){
         return result;
       }
       if(a.retryNow&&!second){
-        second=true;held=true;firstLimit=a.limit;
+        second=true;firstLimit=a.limit;
         if(_windBatch)_windBatch.retry++;
         continue;
       }
@@ -7065,15 +7064,14 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=0){
     try{_scheduleWindRecovery();}catch(_){}
     return null;
   }finally{
-    if(held){held=false;_windRelease();} // safety: never keep a slot that no try is using
     _windSiteDone();
   }
 }
 // v749: ONE attempt at ONE forecast request. Takes a queue slot, always gives it back (finally), and
 // never throws. A reply that is cut off, isn't JSON, or is missing parts of the forecast is a failure
 // of that one site only - the slot is still released and the other sites carry on.
-async function _windAttempt(url,timeoutMs,canRetry,inheritSlot,canInline){
-  if(!inheritSlot)await _windSlot(false); // v757: a second try keeps the slot of the try that just failed - it can't be taken by another site's first try in between
+async function _windAttempt(url,timeoutMs,canRetry,isRetry,canInline){
+  await _windSlot(!!isRetry); // v758: every try takes its own slot; a second try queues behind waiting first tries
   timeoutMs=timeoutMs||_windStallMs(); // v757: decided when the request actually starts (replies that arrived while it waited in line count)
   let status=0,result=null,kind='',retry429=false,retryNow=false,tm=null;
   const t0=Date.now();
@@ -7102,8 +7100,8 @@ async function _windAttempt(url,timeoutMs,canRetry,inheritSlot,canInline){
     if(tm)clearTimeout(tm);
     if(result){_windRtt.push({t:Date.now(),ms:Date.now()-t0});if(_windRtt.length>WIND_EVIDENCE_KEEP)_windRtt.shift();}
     if(!result&&status===429&&canRetry){retry429=true;_windRetrying++;} // counted BEFORE the slot is freed so the batch summary stays open during the pause
-    else if(!result&&canInline&&(status===0||status>=500))retryNow=true; // v756/v757: the slot is handed straight to this site's second try, not given back
-    if(!retryNow)_windRelease();
+    else if(!result&&canInline&&(status===0||status>=500))retryNow=true; // v758: the slot is given back at once; the second try queues behind waiting first tries
+    _windRelease();
   }
   return{result,status,kind,retry429,retryNow,ms:Date.now()-t0,limit:timeoutMs};
 }
