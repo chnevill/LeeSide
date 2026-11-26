@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v746';
+const APP_VERSION='v748';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -4330,6 +4330,64 @@ let _touchClosePending=false; // true immediately after our OWN touch handler vi
                                 // physical swipe; this tells the handler to absorb it silently
                                 // rather than processing it a second time (which was causing a
                                 // single swipe to silently consume two steps of real history).
+// v748 (Android only): the back gesture is handled by the browser's CloseWatcher instead of
+// fake history entries. Each open screen registers one watcher; a back swipe closes exactly the
+// newest one, no history entry is ever added, so nothing can get out of step with the screen.
+// Where the browser has no CloseWatcher (or creating one fails) every screen falls back to the
+// old history way, one screen at a time. iPhone never reaches any of this (isAndroid is false).
+const _useCW=isAndroid&&typeof window.CloseWatcher==='function';
+function _backLog(m){try{_swDiag('[back] '+m);}catch(_){}}
+function _cwRelease(item){if(item&&item.w){try{item.w.destroy();}catch(_){}item.w=null;}}
+function _cwArm(item){
+  try{
+    const w=new CloseWatcher();
+    w.onclose=()=>_cwFired(item);
+    item.w=w;
+    return true;
+  }catch(e){_backLog('could not create a close watcher for '+item.id+' ('+e+') - using the old way for it');return false;}
+}
+// A back swipe arrived for this screen: same steps the old popstate handler did - take it off
+// the list, then run the same close routine its own Close button uses.
+function _cwFired(item){
+  const i=_histCtx.indexOf(item);
+  if(i<0)return;
+  _histCtx.splice(i,1);
+  item.w=null;
+  _backLog('back closed '+item.id+' ('+_histCtx.length+' still open)');
+  if(item.onClose)item.onClose();
+}
+// Pushes one entry onto the back stack: a CloseWatcher if available, else the old history entry.
+function _histPush(item){
+  _histCtx.push(item);
+  if(!(_useCW&&_cwArm(item)))history.pushState({depth:_histCtx.length},'');
+}
+// Takes the newest entry off after its screen was closed by a tap/button (not by a swipe).
+function _histPopTop(){
+  const top=_histCtx.pop();
+  if(top&&top.w)_cwRelease(top);
+  else{_suppressPopstateCount++;history.back();}
+}
+// Root guard: with nothing open, a back swipe must not leave the app. One watcher sits at the
+// bottom; when it fires we put a fresh one back. Created on the first tap anywhere (browsers
+// only allow several watchers to close one at a time when they were made by a tap) - the same
+// way BackLab tested it on the Pixel.
+let _rootCW=null,_rootArmed=false;
+function _armRootCW(){
+  try{
+    const w=new CloseWatcher();
+    _rootCW=w;
+    w.onclose=()=>{
+      _rootCW=null;
+      const top=_histCtx[_histCtx.length-1];
+      if(top&&top.w){_cwFired(top);} // a screen was open above this one by mistake: close that instead
+      else _backLog('root guard caught a back swipe with nothing open (stayed in app)');
+      _armRootCW();
+    };
+  }catch(e){_backLog('could not create the root guard ('+e+')');}
+}
+if(_useCW){
+  document.addEventListener('click',()=>{if(_rootArmed)return;_rootArmed=true;_armRootCW();_backLog('close-watcher back handling on');},{capture:true,once:true});
+}
 function openOverlay(id,onClose){
   if(_overlayStack.includes(id))return; // already open — don't push a duplicate entry
   const el=document.getElementById(id);
@@ -4337,8 +4395,7 @@ function openOverlay(id,onClose){
   el.classList.add('open');
   _overlayStack.push(id);
   if(isAndroid){
-    _histCtx.push({id,onClose:onClose||(()=>closeOverlay(id))});
-    history.pushState({depth:_histCtx.length},'');
+    _histPush({id,onClose:onClose||(()=>closeOverlay(id))});
   }
 }
 // v639: keep the reading position when an open flight / note / site note / gear
@@ -4398,9 +4455,12 @@ function closeOverlay(id){
   if(isAndroid){
     const top=_histCtx[_histCtx.length-1];
     if(top&&top.id===id){
-      _histCtx.pop();
-      _suppressPopstateCount++;
-      history.back();
+      _histPopTop();
+    }else{
+      // v748: closed from underneath something else - its watcher must still go, or a later
+      // back swipe would "close" a screen that is already gone and look like it did nothing.
+      const i=_histCtx.findIndex(x=>x.id===id&&x.w);
+      if(i>=0){_cwRelease(_histCtx[i]);_histCtx.splice(i,1);}
     }
   }
   _checkForWaitingUpdate();
@@ -4411,6 +4471,9 @@ function closeOverlay(id){
 // consuming a real history step for this exact physical swipe already; calling history.back()
 // ourselves too risked a single swipe silently consuming two steps at once.
 function touchCloseOverlay(id,onCloseExtra){
+  // v748: on Android the system's own back gesture already closes this screen through its
+  // close watcher; closing it here too is exactly the double step this change removes.
+  if(isAndroid&&_histCtx.some(x=>x.id===id&&x.w))return;
   if(PHOTO_AREA_BY_OVERLAY[id])invalidatePhotoSession(PHOTO_AREA_BY_OVERLAY[id]);
   document.getElementById(id).classList.remove('open');
   _overlayStack=_overlayStack.filter(x=>x!==id);
@@ -4470,9 +4533,7 @@ async function showTab(name){
   if(currentTab==='stats'&&name!=='stats'&&isAndroid){
     const top=_histCtx[_histCtx.length-1];
     if(top&&top.id==='stats-nav'){
-      _histCtx.pop();
-      _suppressPopstateCount++;
-      history.back();
+      _histPopTop();
     }
   }
   // Reset star filter when leaving logbook
@@ -4511,8 +4572,7 @@ async function showTab(name){
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='stats'&&isAndroid&&(!_histCtx.length||_histCtx[_histCtx.length-1].id!=='stats-nav')){
-    _histCtx.push({id:'stats-nav',onClose:()=>showTab('log')});
-    history.pushState({depth:_histCtx.length},'');
+    _histPush({id:'stats-nav',onClose:()=>showTab('log')});
   }
   updateFabForTab(name);
   if(name==='stats')renderStats();
@@ -13095,7 +13155,7 @@ localLoad().then(()=>{
   syncTopbarLayoutForOrientation();
   npUpdate();
   updateStats();
-  if(isAndroid)history.pushState({root:true},'');
+  if(isAndroid&&!_useCW)history.pushState({root:true},'');
   backfillSiteCountries();
 
   if(userInfo){
