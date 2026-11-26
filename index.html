@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v751';
+const APP_VERSION='v752';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7039,15 +7039,20 @@ async function _windAttempt(url,timeoutMs,canRetry){
   const t0=Date.now();
   try{
     const ac=new AbortController();
-    tm=setTimeout(()=>ac.abort(),timeoutMs);
-    const r=await fetch(url,{signal:ac.signal});
-    status=r.status;
-    if(r.ok){
-      const txt=await r.text();
-      try{recordForecastBytes(byteLen(txt));}catch(_){} /* v680 data-usage counter */
-      result=_windParse(JSON.parse(txt));
-      if(!result)kind='no current data in reply';
-    }
+    // v752: hard stop. The timer both cancels the request AND ends the wait itself, so a request the browser
+    // never cancels still gives its queue slot back on time.
+    const work=(async()=>{
+      const r=await fetch(url,{signal:ac.signal});
+      status=r.status;
+      if(r.ok){
+        const txt=await r.text();
+        try{recordForecastBytes(byteLen(txt));}catch(_){} /* v680 data-usage counter */
+        result=_windParse(JSON.parse(txt));
+        if(!result)kind='no current data in reply';
+      }
+    })();
+    work.catch(()=>{}); // a late failure after the hard stop must not surface as an unhandled error
+    await Promise.race([work,new Promise((_,rej)=>{tm=setTimeout(()=>{try{ac.abort();}catch(_){}const e=new Error('timeout');e.name='AbortError';rej(e);},timeoutMs);})]);
   }catch(e){
     result=null;
     kind=(e&&e.name==='AbortError')?('timed out ('+Math.round(timeoutMs/1000)+' s)'):
