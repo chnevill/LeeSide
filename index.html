@@ -8749,7 +8749,7 @@ function showNoteView(nid,siteKey){
         if(!freshCoords)return; // coordinates removed since this view was rendered - nothing valid left to navigate to
         const[lat,lon]=freshCoords.split(',').map(s=>parseFloat(s));
         if(!isFinite(lat)||!isFinite(lon))return;
-        openExternalWithDataCheck(null,`https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`,'Google Maps');
+        window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`,'_blank'); // no Data Saver prompt here, by request
       };
     }
     const airspaceBtn=document.getElementById('noteViewAirspaceBtn');
