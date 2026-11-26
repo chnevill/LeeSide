@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v754';
+const APP_VERSION='v755';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -8740,6 +8740,18 @@ function showNoteView(nid,siteKey){
       const[lat,lon]=freshCoords.split(',').map(parseFloat);
       openExternalWithDataCheck(null,`https://earth.google.com/web/@${lat},${lon},100000a,10000d`,'Google Earth');
     };
+    // v755: tapping the site name opens Google Maps driving directions to the site (only when the site has coordinates)
+    const titleDirEl=document.getElementById('noteViewTitle');
+    if(titleDirEl&&curCoords){
+      titleDirEl.style.cursor='pointer';
+      titleDirEl.onclick=()=>{
+        const freshCoords=_curUuid?siteCoordsByUuid[_curUuid]:null;
+        if(!freshCoords)return; // coordinates removed since this view was rendered - nothing valid left to navigate to
+        const[lat,lon]=freshCoords.split(',').map(s=>parseFloat(s));
+        if(!isFinite(lat)||!isFinite(lon))return;
+        openExternalWithDataCheck(null,`https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`,'Google Maps');
+      };
+    }
     const airspaceBtn=document.getElementById('noteViewAirspaceBtn');
     if(airspaceBtn)airspaceBtn.onclick=()=>{
       const freshCoords=_curUuid?siteCoordsByUuid[_curUuid]:null;
