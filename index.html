@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v749';
+const APP_VERSION='v750';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -1771,6 +1771,40 @@ function log(...args){
   if(!_dbgSaveTimer)_dbgSaveTimer=setTimeout(()=>{_dbgSaveTimer=null;if(_dbgSaveOK)localSave();},2000);
   if(debugMode)renderDebugPanel();
 }
+// v750: optional remote copy of this log, so it can be read without copying and pasting it. OFF unless a token has
+// been pasted into this phone (Sign-in log panel, "Remote log" button). The token is kept only on this device (never
+// synced, never in the log) and can write to ONE private repo, chnevill/leeside-logs, nothing else. It sends
+// the last 1200 log lines to one file per phone (log-iphone.txt / log-android.txt), overwritten each time: after a forecast
+// failure, on returning to the app, and once at start - never more than once every 2 minutes. A failed send is
+// ignored and never retried in a loop; it changes nothing else in the app.
+const LOG_REPO='chnevill/leeside-logs';
+let _logUpTimer=null,_logUpLast=0,_logUpSha=null,_logUpState='not set up',_logUpBusy=false;
+function _logUpToken(){try{return localStorage.getItem('leeside_logToken')||'';}catch(e){return '';}}
+function _logUpRefreshBtn(){const b=document.getElementById('_dbgRemoteBtn');if(b)b.textContent=_logUpToken()?('Remote log: '+_logUpState):'Remote log: set up';}
+function _logUploadSoon(){
+  if(!_logUpToken()||_logUpTimer)return;
+  const wait=Math.max(15000,120000-(Date.now()-_logUpLast));
+  _logUpTimer=setTimeout(()=>{_logUpTimer=null;_logUploadNow();},wait);
+}
+async function _logUploadNow(){
+  const tok=_logUpToken();
+  if(!tok||_logUpBusy)return;
+  _logUpBusy=true;_logUpLast=Date.now();
+  try{
+    const text='LeeSide log | '+APP_VERSION+' | sent '+new Date().toISOString()+' | '+navigator.userAgent+' | online='+navigator.onLine+' | '+document.visibilityState+'\n'+dbg.slice(-1200).join('\n')+'\n';
+    const b64=btoa(unescape(encodeURIComponent(text)));
+    const url='https://api.github.com/repos/'+LOG_REPO+'/contents/log-'+(/Android/i.test(navigator.userAgent)?'android':'iphone')+'.txt';
+    const hdr={Authorization:'Bearer '+tok,Accept:'application/vnd.github+json'};
+    const call=async(u,opt)=>{const ac=new AbortController();const tm=setTimeout(()=>ac.abort(),15000);try{return await fetch(u,Object.assign({},opt,{signal:ac.signal}));}finally{clearTimeout(tm);}};
+    const put=()=>call(url,{method:'PUT',headers:Object.assign({'Content-Type':'application/json'},hdr),body:JSON.stringify(Object.assign({message:'log '+APP_VERSION+' '+new Date().toISOString(),content:b64},_logUpSha?{sha:_logUpSha}:{}))});
+    if(!_logUpSha){const g=await call(url,{headers:hdr});if(g.ok)_logUpSha=(await g.json()).sha;else if(g.status!==404){_logUpState='failed (HTTP '+g.status+')';return;}}
+    let r=await put();
+    if(r.status===409||r.status===422){const g=await call(url,{headers:hdr});if(g.ok){_logUpSha=(await g.json()).sha;r=await put();}}
+    if(r.ok){const j=await r.json();_logUpSha=(j.content&&j.content.sha)||null;_logUpState='sent '+new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});}
+    else{_logUpSha=null;_logUpState='failed (HTTP '+r.status+')';}
+  }catch(e){_logUpSha=null;_logUpState='failed ('+((e&&e.name==='AbortError')?'timed out':((e&&e.message)||'error'))+')';}
+  finally{_logUpBusy=false;try{_logUpRefreshBtn();}catch(_){}}
+}
 window.addEventListener('error',e=>{plog('UNCAUGHT ERROR:',e.message,'at',e.filename+':'+e.lineno);});
 window.addEventListener('unhandledrejection',e=>{plog('UNHANDLED REJECTION:',e.reason&&e.reason.message?e.reason.message:e.reason);});
 // One line of context at the start of each sync attempt (10/5): which version
@@ -2037,8 +2071,20 @@ function renderDebugPanel(){
     closeBtn.textContent='Close';
     closeBtn.style.cssText='flex:0 0 60px;background:transparent;color:#0f0;border:1px solid #0f0;border-radius:4px;padding:6px;font-family:monospace;font-size:11px;';
     closeBtn.onclick=()=>panel.remove();
+    const remoteBtn=document.createElement('button');
+    remoteBtn.id='_dbgRemoteBtn';
+    remoteBtn.style.cssText='flex:1;background:transparent;color:#0f0;border:1px solid #0f0;border-radius:4px;padding:6px;font-family:monospace;font-size:11px;';
+    remoteBtn.onclick=()=>{
+      if(!_logUpToken()){
+        const v=(window.prompt('Paste the log token (starts with github_pat_)')||'').trim();
+        if(v){try{localStorage.setItem('leeside_logToken',v);}catch(e){}_logUpState='sending...';_logUpRefreshBtn();_logUploadNow();}
+      }else if(window.confirm('Send the log now?\n\n(Cancel to turn the remote log off and remove the token from this phone.)')){
+        _logUpState='sending...';_logUpRefreshBtn();_logUploadNow();
+      }else{try{localStorage.removeItem('leeside_logToken');}catch(e){}_logUpSha=null;_logUpState='not set up';_logUpRefreshBtn();}
+    };
     header.appendChild(copyBtn);
     header.appendChild(lastBtn);
+    header.appendChild(remoteBtn);
     header.appendChild(closeBtn);
     const textEl=document.createElement('div');
     textEl.id='_dbgPanelText';
@@ -2047,6 +2093,7 @@ function renderDebugPanel(){
     panel.appendChild(textEl);
     document.body.appendChild(panel);
   }
+  _logUpRefreshBtn();
   const _t=document.getElementById('_dbgPanelText');
   _t.textContent=dbg.join('\n');
   _t.scrollTop=_t.scrollHeight; // history now grows - keep the newest lines in view
@@ -6869,6 +6916,7 @@ function _windRelease(){
     const bt=_windBatch;_windBatch=null;
     try{
       const kinds=Object.keys(bt.kinds).map(k=>k+': '+bt.kinds[k]).join(', ');
+      if(bt.fail)_logUploadSoon(); // v750
       log(`forecast batch: ${bt.ok} ok, ${bt.fail} failed${kinds?' ('+kinds+')':''}${bt.skipped?', '+bt.skipped+' not sent after repeated failures':''}${bt.r429?', '+bt.r429+' retried after 429':''}, took ${((Date.now()-bt.t0)/1000).toFixed(1)} s, app ${document.visibilityState}${bt.okMs.length?', replies took '+Math.min.apply(null,bt.okMs)+'-'+Math.max.apply(null,bt.okMs)+' ms':''}`);
     }catch(_){}
   }
@@ -13131,6 +13179,7 @@ document.addEventListener('visibilitychange',async()=>{
   if(_bgRefreshInterval){clearInterval(_bgRefreshInterval);_bgRefreshInterval=null;}
   // the 'online' event may have fired and been missed while backgrounded
   log(`event: app returned to foreground (canSync=${canSync()}, token=${accessToken?'yes':'no'})`);
+  _logUploadSoon(); // v750
   _refreshSitesForecastOnReturn();
   if(canSync()){
     if(accessToken){
@@ -13178,6 +13227,7 @@ localLoad().then(()=>{
     let upd=false;
     try{const t=parseInt(sessionStorage.getItem('_swLastReloadAt')||'0',10);upd=!!t&&Date.now()-t<20000;}catch(_){}
     log(`event: app started | ${APP_VERSION} | nav=${nav} | discarded=${!!document.wasDiscarded} | sameSession=${same} | updateReload=${upd} | ${document.visibilityState}`);
+    _logUploadSoon(); // v750
   }catch(_){}
   document.getElementById('appVersionLabel').textContent=APP_VERSION;
   migrateData();
