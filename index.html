@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v756';
+const APP_VERSION='v757';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6842,8 +6842,22 @@ async function estimateWindForFlight(flightId,coordsStr,date,time){
 }
 let _windCache={}; // site -> {data, fetchedAt}
 const WIND_CACHE_MS=15*60*1000;
-const WIND_TIMEOUT_MS=4000; // v756: first try gives up after 4 s (from Chris's real log: replies arrive in under 2 s, a request still silent after 4 s almost never answers). A site that times out or fails to connect is asked again at once, with the longer limit below
-const WIND_RETRY_TIMEOUT_MS=15000; // v756: the one immediate second try for a single site
+const WIND_TIMEOUT_MS=10000; // the longest a first try may take (v751: 10 s - on a weak signal a 5 s limit cancelled replies that would have arrived)
+const WIND_RETRY_TIMEOUT_MS=15000; // v756: the one immediate second try for a single site whose first try timed out or failed to connect
+// v757: ADAPTIVE first-try limit. A first try gives up after WIND_STALL_MIN_MS to WIND_TIMEOUT_MS depending on how fast the
+// last few forecast replies actually were: if recent replies came back in well under a second, a request still silent after
+// 3 s is almost certainly stuck and is asked again at once; if recent replies were slow (weak signal), requests get the
+// full 10 s, exactly as before. With no recent replies to go by (app just started, or nothing for 30 min) it is the full 10 s.
+const WIND_STALL_MIN_MS=3000;
+const WIND_EVIDENCE_MS=30*60*1000, WIND_EVIDENCE_MIN=3, WIND_EVIDENCE_KEEP=8;
+let _windRtt=[]; // {t,ms} of recent successful forecast replies
+function _windStallMs(){
+  const now=Date.now();
+  const r=_windRtt.filter(x=>now-x.t<WIND_EVIDENCE_MS).slice(-6);
+  if(r.length<WIND_EVIDENCE_MIN)return WIND_TIMEOUT_MS;
+  const slowest=Math.max.apply(null,r.map(x=>x.ms)); // the SLOWEST of the last few replies, so one slow reply makes the next requests patient straight away
+  return Math.min(WIND_TIMEOUT_MS,Math.max(WIND_STALL_MIN_MS,slowest*4));
+}
 const WIND_FAIL_COOLDOWN_MS=30000; // v746: a site whose forecast just failed isn't asked for again by a non-forced redraw for 30 s (stops repeated returns to the app piling up new rounds of requests); pull-down still forces a retry
 const SITE_WIND_FIRST=10; // v746: only the nearest 10 sites ask for a forecast up front; the rest ask as they scroll into view
 let _windFailAt={};
@@ -6909,19 +6923,20 @@ async function _windRecoverRound(){
     if(!tabEl||!tabEl.classList.contains('active'))return;
     const sinp=document.getElementById('siteSearchInput');
     if(sinp&&sinp.value.trim())return;
-    const todo=[],seen=new Set();
+    const todo=[],seen=new Set();let busy=0;
     for(const u of (_siteNoteOrder||[])){
       const c=siteCoordsByUuid[u];
       if(!c||seen.has(c))continue;
       seen.add(c);
+      if(_windInflight[c]){busy++;continue;} // v757: a request (or its second try / 429 pause) is already on its way for this site - never queue another
       if(_windTried[c]&&_windNeedsRetry(c))todo.push(c);
       if(todo.length>=SITE_WIND_FIRST)break;
     }
-    if(!todo.length){_windRecoverN=0;return;}
+    if(!todo.length){if(!busy)_windRecoverN=0;return;} // sites still in flight schedule their own recovery if they fail
     _windRecoverN++;
     const res=await Promise.all(todo.map(c=>fetchSiteWind(c,true))); // force: this timer is its own pacing, so the 30 s cooldown does not apply (a request already queued or running is still joined, not doubled)
     todo.forEach((c,i)=>_windRepaint(c,res[i]));
-    if(todo.some(_windNeedsRetry))_scheduleWindRecovery();else _windRecoverN=0;
+    if(todo.some(_windNeedsRetry))_scheduleWindRecovery();else if(!busy)_windRecoverN=0;
   }catch(e){}
 }
 async function fetchSiteWind(coords,force,timeoutMs){
@@ -6931,7 +6946,7 @@ async function fetchSiteWind(coords,force,timeoutMs){
   if(_windInflight[coords])return _windInflight[coords]; // v749: asking again - pull-down included - joins the request already queued or running for this site; force skips only the saved result and the cooldown
   if(!force&&_windFailAt[coords]&&Date.now()-_windFailAt[coords]<WIND_FAIL_COOLDOWN_MS)return null; // v746: failed a moment ago - don't start another round yet
   _windTried[coords]=true;
-  const p=_fetchSiteWindNet(coords,!!force,timeoutMs||WIND_TIMEOUT_MS);
+  const p=_fetchSiteWindNet(coords,!!force,timeoutMs||0); // 0 = adaptive first-try limit (v757)
   _windInflight[coords]=p;
   const _done=()=>{if(_windInflight[coords]===p)delete _windInflight[coords];};p.then(_done,_done);
   return p;
@@ -6949,6 +6964,7 @@ const WIND_MAX_PARALLEL=4;
 let _windActive=0;
 const _windQueue=[];
 let _windBatch=null;
+let _windSites=0; // v757: sites with a forecast request in progress (first try, second try or 429 pause). The batch summary is written only when this reaches 0, so the last site's result is counted in it.
 let _windRetrying=0; // sites currently waiting out a 429 pause - keeps the batch (and its one summary line) open
 function _windNewBatch(){return{t0:Date.now(),ok:0,fail:0,skipped:0,r429:0,kinds:{},logged:0,okMs:[],retry:0,retryOk:0};}
 function _windPump(){
@@ -6961,21 +6977,28 @@ function _windSlot(front){
 function _windRelease(){
   _windActive--;
   _windPump();
-  if(_windActive===0&&!_windQueue.length&&!_windRetrying&&_windBatch){
-    const bt=_windBatch;_windBatch=null;
-    try{
-      const kinds=Object.keys(bt.kinds).map(k=>k+': '+bt.kinds[k]).join(', ');
-      if(bt.fail)_logUploadSoon(); // v750
-      log(`forecast batch: ${bt.ok} ok, ${bt.fail} failed${kinds?' ('+kinds+')':''}${bt.skipped?', '+bt.skipped+' not sent after repeated failures':''}${bt.r429?', '+bt.r429+' retried after 429':''}${bt.retry?', '+bt.retry+' asked a second time at once ('+bt.retryOk+' of them ok)':''}, took ${((Date.now()-bt.t0)/1000).toFixed(1)} s, app ${document.visibilityState}${bt.okMs.length?', replies took '+Math.min.apply(null,bt.okMs)+'-'+Math.max.apply(null,bt.okMs)+' ms':''}`);
-    }catch(_){}
+}
+function _windSiteDone(){ // v757: called after a site's result has been counted
+  _windSites--;
+  if(_windSites<=0){
+    _windSites=0;
+    if(_windBatch&&_windActive===0&&!_windQueue.length&&!_windRetrying)_windCloseBatch();
   }
+}
+function _windCloseBatch(){
+  const bt=_windBatch;_windBatch=null;if(!bt)return;
+  try{
+    const kinds=Object.keys(bt.kinds).map(k=>k+': '+bt.kinds[k]).join(', ');
+    if(bt.fail)_logUploadSoon(); // v750
+      log(`forecast batch: ${bt.ok} ok, ${bt.fail} failed${kinds?' ('+kinds+')':''}${bt.skipped?', '+bt.skipped+' not sent after repeated failures':''}${bt.r429?', '+bt.r429+' retried after 429':''}${bt.retry?', '+bt.retry+' asked a second time at once ('+bt.retryOk+' of them ok)':''}, took ${((Date.now()-bt.t0)/1000).toFixed(1)} s, app ${document.visibilityState}${bt.okMs.length?', replies took '+Math.min.apply(null,bt.okMs)+'-'+Math.max.apply(null,bt.okMs)+' ms':''}`);
+  }catch(_){}
 }
 function _windNoteFail(coords,kind,ms){
   const bt=_windBatch;if(!bt)return;
   bt.fail++;bt.kinds[kind]=(bt.kinds[kind]||0)+1;
   if(bt.logged<5){bt.logged++;try{log(`forecast fetch failed for ${coords}: ${kind} (after ${ms} ms)`);}catch(_){}}
 }
-async function _fetchSiteWindNet(coords,force,timeoutMs=WIND_TIMEOUT_MS){
+async function _fetchSiteWindNet(coords,force,timeoutMs=0){
   const[lat,lon]=coords.split(',').map(parseFloat);
     // Uses Open-Meteo's default best_match model (9/14/9/15 investigation):
     // the default can occasionally show gust below sustained speed, a
@@ -6998,14 +7021,16 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=WIND_TIMEOUT_MS){
   // v749: a slot taken from the queue is ALWAYS given back (see _windAttempt), and a 429 pause happens
   // outside the slot. Nothing in here can throw out to the caller: a site that can't be fetched
   // simply comes back null.
+  if(!_windBatch)_windBatch=_windNewBatch();
+  _windSites++;
+  let held=false; // a slot kept for this site's second try
   try{
-    let attempt=0,second=false;
+    let attempt=0,second=false,firstLimit=WIND_TIMEOUT_MS;
     while(true){
       let a;
-      if(second){ // v756: the immediate second try - front of the line, longer limit, never a third
-        const pa=_windAttempt(url,WIND_RETRY_TIMEOUT_MS,false,true,false);
-        _windRetrying--; // the second try is now queued, so the batch no longer needs to be held open for it
-        a=await pa;
+      if(second){ // v756/v757: the immediate second try - runs in the slot the first try held, longer limit, never a third
+        held=false; // from here the second try owns the slot and always gives it back
+        a=await _windAttempt(url,firstLimit<WIND_TIMEOUT_MS?WIND_RETRY_TIMEOUT_MS:WIND_TIMEOUT_MS,false,true,false); // generous after an early give-up (the connection may just be slow); same as a normal try after a full-length wait
       }else a=await _windAttempt(url,timeoutMs,attempt<1,false,true);
       if(a.result){
         const result=a.result.partial?_windMergePartial(coords,a.result):a.result;
@@ -7018,7 +7043,7 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=WIND_TIMEOUT_MS){
         return result;
       }
       if(a.retryNow&&!second){
-        second=true;
+        second=true;held=true;firstLimit=a.limit;
         if(_windBatch)_windBatch.retry++;
         continue;
       }
@@ -7039,13 +7064,17 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=WIND_TIMEOUT_MS){
     try{_windNoteFail(coords,'internal error ('+((e&&e.message)||'unknown')+')',0);}catch(_){}
     try{_scheduleWindRecovery();}catch(_){}
     return null;
+  }finally{
+    if(held){held=false;_windRelease();} // safety: never keep a slot that no try is using
+    _windSiteDone();
   }
 }
 // v749: ONE attempt at ONE forecast request. Takes a queue slot, always gives it back (finally), and
 // never throws. A reply that is cut off, isn't JSON, or is missing parts of the forecast is a failure
 // of that one site only - the slot is still released and the other sites carry on.
-async function _windAttempt(url,timeoutMs,canRetry,front,canInline){
-  await _windSlot(front);
+async function _windAttempt(url,timeoutMs,canRetry,inheritSlot,canInline){
+  if(!inheritSlot)await _windSlot(false); // v757: a second try keeps the slot of the try that just failed - it can't be taken by another site's first try in between
+  timeoutMs=timeoutMs||_windStallMs(); // v757: decided when the request actually starts (replies that arrived while it waited in line count)
   let status=0,result=null,kind='',retry429=false,retryNow=false,tm=null;
   const t0=Date.now();
   try{
@@ -7071,11 +7100,12 @@ async function _windAttempt(url,timeoutMs,canRetry,front,canInline){
          'network error ('+((e&&e.message)||'unknown')+')';
   }finally{
     if(tm)clearTimeout(tm);
+    if(result){_windRtt.push({t:Date.now(),ms:Date.now()-t0});if(_windRtt.length>WIND_EVIDENCE_KEEP)_windRtt.shift();}
     if(!result&&status===429&&canRetry){retry429=true;_windRetrying++;} // counted BEFORE the slot is freed so the batch summary stays open during the pause
-    else if(!result&&canInline&&(status===0||status>=500)){retryNow=true;_windRetrying++;} // v756: same idea for the immediate second try
-    _windRelease();
+    else if(!result&&canInline&&(status===0||status>=500))retryNow=true; // v756/v757: the slot is handed straight to this site's second try, not given back
+    if(!retryNow)_windRelease();
   }
-  return{result,status,kind,retry429,retryNow,ms:Date.now()-t0};
+  return{result,status,kind,retry429,retryNow,ms:Date.now()-t0,limit:timeoutMs};
 }
 // v749: turns Open-Meteo's reply into the app's forecast object. Same fields as before; a reply
 // that has the current reading but incomplete hourly/daily lists gives empty lists for those
