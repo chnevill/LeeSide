@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v760';
+const APP_VERSION='v761';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6898,6 +6898,14 @@ function _windSavedFor(coords){
   const age=Date.now()-s.t;
   return(age>=0&&age<WIND_STALE_MS)?{data:s.data,age}:null;
 }
+// v761: the newest forecast we hold for a site (in memory or saved on this device) and how old it is. Anything
+// WIND_STALE_MS old or older is never returned. Every place that shows a forecast without a fresh reply uses this,
+// and passes the age to _paintSiteWind, which writes "saved N ago" once it is WIND_CACHE_MS or older.
+function _windBestKnown(coords){
+  const c=_windCache[coords];
+  if(c&&c.data){const age=Date.now()-(c.data.at||c.fetchedAt||0);if(age>=0&&age<WIND_STALE_MS)return{data:c.data,age};}
+  return _windSavedFor(coords);
+}
 function _windSaveSoon(){
   if(_windSaveTimer)return;
   _windSaveTimer=setTimeout(()=>{
@@ -8460,6 +8468,8 @@ function _scheduleSiteLocRetry(){
 // and is asked again by the things above: opening Sites, returning to the app, pulling down.
 function _windUuidsFor(coords){return Object.keys(siteCoordsByUuid).filter(u=>siteCoordsByUuid[u]===coords);}
 function _siteWindState(uuid){
+  const _bk=siteCoordsByUuid[uuid]?_windBestKnown(siteCoordsByUuid[uuid]):null; // v761: a forecast we already hold is shown (with its age) instead of "Loading"
+  if(_bk){_paintSiteWind(uuid,_bk.data,_bk.age);return;}
   const listEl=document.getElementById('siteNotesCardList');if(!listEl)return;
   const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
   const bar=listEl.querySelector(`[data-windbarsite="${uuid}"] [data-windscroll]`);
@@ -8561,10 +8571,10 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
       }
     };
     if(noFetch){
-      const c=_windCache[coords];
-      if(c){_paintSiteWind(uuid,c.data);return;}                       // already have it - just show it
+      const bk=_windBestKnown(coords);
+      if(bk&&bk.age<WIND_CACHE_MS){_paintSiteWind(uuid,bk.data,bk.age);return;} // already have a current one - just show it (v761: an older one is never drawn as current)
       if(_windInflight[coords]){_siteWindState(uuid);_windInflight[coords].then(showResult);return;} // one is on its way - wait for that
-      if(_windTried[coords]){showResult(_windDataCache[uuid]||null);return;}
+      if(_windTried[coords]){if(bk)_paintSiteWind(uuid,bk.data,bk.age);else _paintSiteWind(uuid,null);return;} // v761: what we hold, with its age - never the last painted copy without it
     }
     const _c=_windCache[coords];
     if(force||!(_c&&Date.now()-_c.fetchedAt<WIND_CACHE_MS)){
@@ -8741,7 +8751,8 @@ function showNoteView(nid,siteKey){
     // Checking for a real value instead means a prior failed attempt never
     // blocks the retry below from actually trying again.
     const distKnown=_curUuid&&_siteDistCache[_curUuid]!=null;
-    const windKnown=_curUuid&&_windDataCache[_curUuid]!=null;
+    const _wk=_curUuid?_windDataCache[_curUuid]:null;
+    const windKnown=!!_wk&&(!_wk.at||Date.now()-_wk.at<WIND_STALE_MS); // v761: a forecast older than WIND_STALE_MS is not shown
     // Gated on curCoords too, not just windKnown - a site that once had
     // coordinates (and a real cached wind reading from back then) but has
     // since had them removed would otherwise keep showing that now-stale
@@ -8751,7 +8762,7 @@ function showNoteView(nid,siteKey){
     const w=(windKnown&&curCoords)?_windDataCache[_curUuid]:null;
     const buildWindBlock=w=>{
       if(!w)return'';
-      const inner=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}</span>`;
+      const inner=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}${(w.at&&Date.now()-w.at>=WIND_CACHE_MS)?` <span style="color:var(--text3);font-size:11px">saved ${_windAgeText(Date.now()-w.at)}</span>`:''}</span>`;
       if(!curCoords)return`<div style="flex-shrink:0;text-align:right">${inner}</div>`;
       const[wLat,wLon]=curCoords.split(',');
       const wUrl=`https://www.windy.com/${wLat}/${wLon}/wind?${wLat},${wLon},11`;
