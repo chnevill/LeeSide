@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v762';
+const APP_VERSION='v763';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6927,6 +6927,14 @@ function _windNeedsRetry(c){
   if(e&&Date.now()-e.fetchedAt<WIND_CACHE_MS)return false;
   return !!_windFailAt[c]||!!(e&&e.data&&e.data.partial);
 }
+// v763: what the app is doing about a saved forecast, shown after its age: a request is running now -> " · updating…";
+// the request failed and the automatic retry is scheduled -> " · retrying"; otherwise nothing.
+function _windStateNote(coords){
+  if(!coords)return '';
+  if(_windInflight[coords])return ' · updating…';
+  if(_windRecoverTimer&&_windNeedsRetry(coords))return ' · retrying';
+  return '';
+}
 function _windRepaint(coords,w){
   _windUuidsFor(coords).forEach(uuid=>{
     if(w)_paintSiteWind(uuid,w);
@@ -8482,7 +8490,7 @@ function _paintSiteWind(uuid,w,staleMs){
   const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
   if(slot){
     if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>';} // v701: the Windy link stays visible without a forecast
-    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;position:relative;color:var(--text2);font-size:14px">gust ${w.gust}${staleMs>=WIND_CACHE_MS?`<span style="position:absolute;right:100%;margin-right:8px;top:50%;transform:translateY(-50%);white-space:nowrap;color:var(--text3);font-size:11px">saved ${_windAgeText(staleMs)}</span>`:''}</span>`;}
+    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;position:relative;color:var(--text2);font-size:14px">gust ${w.gust}${staleMs>=WIND_CACHE_MS?`<span style="position:absolute;right:100%;margin-right:8px;top:50%;transform:translateY(-50%);white-space:nowrap;color:var(--text3);font-size:11px">saved ${_windAgeText(staleMs)}${_windStateNote(siteCoordsByUuid[uuid])}</span>`:''}</span>`;}
   }
   const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
   if(accentEl)accentEl.style.background=w?windSpeedToColor(w.speed):'transparent';
@@ -8583,7 +8591,10 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
       if(sv)_paintSiteWind(uuid,sv.data,sv.age); // v727: show the saved forecast while the fresh one loads
       else _siteWindState(uuid);
     }
-    fetchSiteWind(coords,force).then(showResult);
+    const _fp=fetchSiteWind(coords,force);
+    const _sv2=(force||!(_c&&Date.now()-_c.fetchedAt<WIND_CACHE_MS))?_windSavedFor(coords):null;
+    if(_sv2)_paintSiteWind(uuid,_sv2.data,_sv2.age); // v763: repaint now the request is registered, so the label can say "updating…"
+    _fp.then(showResult);
   };
   if(_siteWindObserver){_siteWindObserver.disconnect();_siteWindObserver=null;}
   withDist.slice(0,SITE_WIND_FIRST).forEach(_loadSiteWind);
@@ -8762,7 +8773,7 @@ function showNoteView(nid,siteKey){
     const w=_bkNow?_bkNow.data:null;
     const buildWindBlock=w=>{
       if(!w)return'';
-      const inner=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}${(w.at&&Date.now()-w.at>=WIND_CACHE_MS)?` <span style="color:var(--text3);font-size:11px">saved ${_windAgeText(Date.now()-w.at)}</span>`:''}</span>`;
+      const inner=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}${(w.at&&Date.now()-w.at>=WIND_CACHE_MS)?` <span style="color:var(--text3);font-size:11px">saved ${_windAgeText(Date.now()-w.at)}${_windStateNote(_curUuid?siteCoordsByUuid[_curUuid]:null)}</span>`:''}</span>`;
       if(!curCoords)return`<div style="flex-shrink:0;text-align:right">${inner}</div>`;
       const[wLat,wLon]=curCoords.split(',');
       const wUrl=`https://www.windy.com/${wLat}/${wLon}/wind?${wLat},${wLon},11`;
@@ -8840,7 +8851,9 @@ function showNoteView(nid,siteKey){
         _lastTry=Date.now();
         const fc=_curUuid?siteCoordsByUuid[_curUuid]:null;
         if(!fc)return;
-        fetchSiteWind(fc,false).then(w2=>{
+        const _fpd=fetchSiteWind(fc,false);
+        paintDetail(); // v763: the request is registered - label can say "updating…"
+        _fpd.then(w2=>{
           const nowC=_curUuid?siteCoordsByUuid[_curUuid]:null;
           if(!nowC||nowC!==fc)return; // coordinates removed or changed while this was in flight - don't cache or display it
           if(w2)_windDataCache[_curUuid]=w2;
