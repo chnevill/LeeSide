@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v765';
+const APP_VERSION='v766';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6886,6 +6886,8 @@ const WIND_RECOVER_MS=[20000,40000,80000,160000,300000];
 const WIND_RECOVER_MAX_ROUNDS=12;
 let _windRecoverTimer=null,_windRecoverN=0;
 let _siteWindObserver=null;
+const SCROLL_SETTLE_MS=350; // v766: a card must stay near the screen this long before its forecast is asked - a fast flick past it asks nothing
+let _siteWindTimers={};
 // v727: the last good forecast for each site is also kept on this device (never synced to Drive) for up to
 // an hour. When a fresh forecast can't be fetched, the card shows the saved one with "updated N min ago"
 // and keeps trying in the background; as soon as a fresh one arrives it replaces the saved one.
@@ -8635,6 +8637,7 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
     _fp.then(showResult);
   };
   if(_siteWindObserver){_siteWindObserver.disconnect();_siteWindObserver=null;}
+  Object.values(_siteWindTimers).forEach(t=>clearTimeout(t));_siteWindTimers={};
   try{_sfLog(`list drawn: ${withDist.length} sites; asking now (nearest ${SITE_WIND_FIRST}): ${withDist.slice(0,SITE_WIND_FIRST).map(x=>_siteLabel(siteCoordsByUuid[x.uuid])).join(', ')}; waiting for scroll: ${withDist.slice(SITE_WIND_FIRST).map(x=>_siteLabel(siteCoordsByUuid[x.uuid])).join(', ')||'none'}${noFetch?' (redraw only, no fetch)':''}`);}catch(_){}
   withDist.slice(0,SITE_WIND_FIRST).forEach(it=>_loadSiteWind(it));
   {
@@ -8652,12 +8655,21 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
       const byUuid=new Map(pending.map(x=>[x.uuid,x]));
       _siteWindObserver=new IntersectionObserver(entries=>{
         entries.forEach(en=>{
-          if(!en.isIntersecting)return;
           const u=en.target.getAttribute('data-sitenotecard');
           const it=byUuid.get(u);if(!it)return;
-          byUuid.delete(u);
-          if(_siteWindObserver)_siteWindObserver.unobserve(en.target);
-          _loadSiteWind(it,'scrolled into view');
+          if(en.isIntersecting){
+            if(_siteWindTimers[u])return;
+            _siteWindTimers[u]=setTimeout(()=>{
+              delete _siteWindTimers[u];
+              if(!byUuid.has(u))return;
+              byUuid.delete(u);
+              if(_siteWindObserver)_siteWindObserver.unobserve(en.target);
+              _loadSiteWind(it,'scrolled into view');
+            },SCROLL_SETTLE_MS);
+          }else if(_siteWindTimers[u]){
+            clearTimeout(_siteWindTimers[u]);delete _siteWindTimers[u];
+            try{_sfLog(`${_siteLabel(siteCoordsByUuid[u])} - scrolled past in under ${SCROLL_SETTLE_MS} ms, not asked (will ask when it settles on screen)`);}catch(_){}
+          }
         });
       },{rootMargin:'300px 0px'});
       pending.forEach(it=>{const el=listEl.querySelector(`[data-sitenotecard="${it.uuid}"]`);if(el)_siteWindObserver.observe(el);else _loadSiteWind(it);});
