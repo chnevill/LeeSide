@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v767';
+const APP_VERSION='v768';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7388,7 +7388,7 @@ function computeNowMarkerPercent(axis){
 }
 function buildDayLabels(axis,granularity,utcOffsetSeconds){
   if(granularity!=='1h'&&granularity!=='3h')return[];
-  const markHours=granularity==='1h'?[0,6,12,18]:[0,12];
+  const markHours=[0]; // v768: one name per day, at local midnight (was every 6 h on 1h and every 12 h on 3h)
   // Each axis slot lands on a fixed, shared grid of absolute moments (see
   // buildSharedTimeAxis) - once converted to a specific site's own local
   // time, that grid won't necessarily line up exactly with a marked hour
@@ -7417,6 +7417,11 @@ function buildDayLabels(axis,granularity,utcOffsetSeconds){
     });
   });
   labels.sort((a,b)=>a.i-b.i);
+  // v768: with one name per day the strip usually starts part-way through a day, so name that first part too
+  if(axis.length&&(!labels.length||labels[0].i>0)){
+    const p0=siteInstantToLocalParts(axis[0],utcOffsetSeconds);
+    labels.unshift({i:0,text:WEEKDAY_NAMES[p0.dayOfWeek],percent:0});
+  }
   return labels;
 }
 // Finds the closest of a site's own data points to a given shared-axis
@@ -7479,8 +7484,8 @@ function refreshAllWindBars(){
     renderOneWindBar(el,data);
   });
 }
-// v767: day names stay pinned at the left edge of the forecast strip while you scroll, until the next day's name reaches
-// them and pushes them off. All horizontal scrolling of the strips is done in JavaScript (drag, momentum, wheel, mouse),
+// v767: day names stay pinned while you scroll, until the next day's name reaches them and pushes them off.
+// v768: pinned at the middle of the strip (was the left edge). All horizontal scrolling of the strips is done in JavaScript (drag, momentum, wheel, mouse),
 // so the labels are shifted in the very same step that sets scrollLeft - no separate timer, so they cannot lag the bars.
 // (Earlier tries: CSS sticky v575 did not draw on the Pixel; a separate per-frame JS pass lagged the bars.)
 function _pinDayLabels(scrollEl){
@@ -7492,7 +7497,7 @@ function _pinDayLabels(scrollEl){
     for(let i=0;i<n;i++){
       const e=sp[i];if(e._b===undefined)continue;
       const nb=(i+1<n&&sp[i+1]._b!==undefined)?sp[i+1]._b:Infinity;
-      const left=Math.max(e._b,Math.min(sl,nb-e._w-4)); // 4 px gap so the pushed-off name does not touch the arriving one
+      const left=Math.max(e._b,Math.min(sl+(scrollEl.clientWidth-e._w)/2,nb-e._w-4)); // 4 px gap so the pushed-off name does not touch the arriving one
       const t=left-e._b;
       if(e._t!==t){e._t=t;e.style.transform=t?`translateX(${t.toFixed(1)}px)`:'';}
     }
