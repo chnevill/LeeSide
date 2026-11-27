@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v770';
+const APP_VERSION='v771';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6931,6 +6931,27 @@ function _windNeedsRetry(c){
 }
 // v763: what the app is doing about a saved forecast, shown after its age: a request is running now -> " · updating…";
 // the request failed and the automatic retry is scheduled -> " · retrying"; otherwise nothing.
+// v771: the "saved N min ago" label (with its note) is held back for the first 3 s after a copy goes stale, so a refresh that
+// succeeds in a second or two never shows it. It shows at once if a try has already failed, and after 3 s if still not refreshed.
+const WIND_LABEL_HOLD_MS=3000;
+const _windHoldAt={},_windHoldTimers={};
+function _windLabelOn(coords){
+  if(!coords)return true;
+  const now=Date.now();
+  if(!_windHoldAt[coords])_windHoldAt[coords]=now;
+  const left=WIND_LABEL_HOLD_MS-(now-_windHoldAt[coords]);
+  if(left<=0||_windFailAt[coords])return true;
+  if(!_windHoldTimers[coords])_windHoldTimers[coords]=setTimeout(()=>{delete _windHoldTimers[coords];_windHoldRepaint(coords);},left+30);
+  return false;
+}
+function _windHoldRepaint(coords){
+  try{
+    const bk=_windBestKnown(coords);
+    if(bk&&bk.age>=WIND_CACHE_MS)_sfLog(`${_siteLabel(coords)} - still not refreshed after ${WIND_LABEL_HOLD_MS/1000} s, label now shown`);
+    if(bk)_windUuidsFor(coords).forEach(u=>_paintSiteWind(u,bk.data,bk.age));
+    if(window._windDetailPaint)window._windDetailPaint();
+  }catch(_){}
+}
 function _windStateNote(coords){
   if(!coords)return '';
   if(_windInflight[coords])return ' · updating…';
@@ -6985,9 +7006,10 @@ async function fetchSiteWind(coords,force,timeoutMs,why){
   if(!force&&_windFailAt[coords]&&Date.now()-_windFailAt[coords]<WIND_FAIL_COOLDOWN_MS){_sfLog(`${_nm} [${why}] - failed ${Math.round((Date.now()-_windFailAt[coords])/1000)} s ago, not asked again yet (30 s pause)`);return null;} // v746: failed a moment ago - don't start another round yet
   _windTried[coords]=true;
   {const _sv0=_windSavedFor(coords);_sfLog(`${_nm} [${why}] - asked${force?' (forced)':''}; ${_sv0?'saved copy is '+Math.round(_sv0.age/60000)+' min old':'nothing saved'}; ${_windActive} running, ${_windQueue.length} waiting`);}
+  if(!_windFailAt[coords])_windHoldAt[coords]=Date.now(); // v771: a new try starts the 3 s label hold again (unless one already failed)
   const _t0=Date.now();
   const p=_fetchSiteWindNet(coords,!!force,timeoutMs||0); // 0 = adaptive first-try limit (v757)
-  p.then(w=>_sfLog(`${_nm} [${why}] - ${w?'got a fresh forecast':'no forecast'} after ${((Date.now()-_t0)/1000).toFixed(1)} s`),()=>_sfLog(`${_nm} [${why}] - error after ${((Date.now()-_t0)/1000).toFixed(1)} s`));
+  p.then(w=>{if(w)delete _windHoldAt[coords];_sfLog(`${_nm} [${why}] - ${w?'got a fresh forecast':'no forecast'} after ${((Date.now()-_t0)/1000).toFixed(1)} s`);},()=>_sfLog(`${_nm} [${why}] - error after ${((Date.now()-_t0)/1000).toFixed(1)} s`));
   _windInflight[coords]=p;
   const _done=()=>{if(_windInflight[coords]===p)delete _windInflight[coords];};p.then(_done,_done);
   return p;
@@ -8557,7 +8579,7 @@ function _paintSiteWind(uuid,w,staleMs){
   const slot=listEl.querySelector(`[data-windslot="${uuid}"]`);
   if(slot){
     if(!w){slot.innerHTML='<span style="color:var(--text3)">No data</span><span style="display:block;font-size:12px;color:var(--text2)">Windy ↗</span>';} // v701: the Windy link stays visible without a forecast
-    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;position:relative;color:var(--text2);font-size:14px">gust ${w.gust}${staleMs>=WIND_CACHE_MS?`<span style="position:absolute;right:100%;margin-right:8px;top:50%;transform:translateY(-50%);white-space:nowrap;color:var(--text3);font-size:11px">saved ${_windAgeText(staleMs)}${_windStateNote(siteCoordsByUuid[uuid])}</span>`:''}</span>`;}
+    else{slot.innerHTML=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;position:relative;color:var(--text2);font-size:14px">gust ${w.gust}${staleMs>=WIND_CACHE_MS&&_windLabelOn(siteCoordsByUuid[uuid])?`<span style="position:absolute;right:100%;margin-right:8px;top:50%;transform:translateY(-50%);white-space:nowrap;color:var(--text3);font-size:11px">saved ${_windAgeText(staleMs)}${_windStateNote(siteCoordsByUuid[uuid])}</span>`:''}</span>`;}
   }
   const accentEl=listEl.querySelector(`[data-windaccent="${uuid}"]`);
   if(accentEl)accentEl.style.background=w?windSpeedToColor(w.speed):'transparent';
@@ -8854,7 +8876,7 @@ function showNoteView(nid,siteKey){
     const w=_bkNow?_bkNow.data:null;
     const buildWindBlock=w=>{
       if(!w)return'';
-      const inner=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}${(w.at&&Date.now()-w.at>=WIND_CACHE_MS)?` <span style="color:var(--text3);font-size:11px">saved ${_windAgeText(Date.now()-w.at)}${_windStateNote(_curUuid?siteCoordsByUuid[_curUuid]:null)}</span>`:''}</span>`;
+      const inner=`<span style="color:var(--gold);font-weight:700;font-size:17px">${weatherEmoji(w.weatherCode)} ${dirArrow(w.dir)} ${w.speed} ${settings.windUnit||'mph'}</span><span style="display:block;color:var(--text2);font-size:14px">gust ${w.gust}${(w.at&&Date.now()-w.at>=WIND_CACHE_MS&&_windLabelOn(_curUuid?siteCoordsByUuid[_curUuid]:null))?` <span style="color:var(--text3);font-size:11px">saved ${_windAgeText(Date.now()-w.at)}${_windStateNote(_curUuid?siteCoordsByUuid[_curUuid]:null)}</span>`:''}</span>`;
       if(!curCoords)return`<div style="flex-shrink:0;text-align:right">${inner}</div>`;
       const[wLat,wLon]=curCoords.split(',');
       const wUrl=`https://www.windy.com/${wLat}/${wLon}/wind?${wLat},${wLon},11`;
@@ -8928,6 +8950,7 @@ function showNoteView(nid,siteKey){
         if(!isDesktopPlatform){const titleEl=document.getElementById('noteViewTitle');if(titleEl)titleEl.style.paddingRight=bk?'90px':'0';}
         return true;
       };
+      window._windDetailPaint=paintDetail;
       const refreshDetail=()=>{
         _lastTry=Date.now();
         const fc=_curUuid?siteCoordsByUuid[_curUuid]:null;
