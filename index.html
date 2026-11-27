@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v768';
+const APP_VERSION='v769';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7095,7 +7095,7 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=0){
     // not re-add a models= parameter without Chris raising this again -
     // both directions of this tradeoff are already known and were weighed
     // deliberately.
-    const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
+    const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=wind_speed_10m_max,wind_gusts_10m_max,weather_code&wind_speed_unit=${windUnitParam()}&timezone=auto&forecast_days=7`;
   // v749: a slot taken from the queue is ALWAYS given back (see _windAttempt), and a 429 pause happens
   // outside the slot. Nothing in here can throw out to the caller: a site that can't be fetched
   // simply comes back null.
@@ -7241,7 +7241,7 @@ function _windParse(j){
     utcOffsetSeconds:j.utc_offset_seconds||0,
     partial:!(hOk&&dOk), // v749: true when the reply had the current reading but not both lists
     hourly:hOk?h.time.map((t,i)=>({time:t,speed:h.wind_speed_10m[i],dir:h.wind_direction_10m[i],gust:h.wind_gusts_10m[i]})):[],
-    daily:dOk?d.time.map((t,i)=>({date:t,speed:d.wind_speed_10m_max[i],gust:d.wind_gusts_10m_max[i]})):[]
+    daily:dOk?d.time.map((t,i)=>({date:t,speed:d.wind_speed_10m_max[i],gust:d.wind_gusts_10m_max[i],code:Array.isArray(d.weather_code)?d.weather_code[i]:null})):[] // v769: code = the day's weather symbol (worst condition of the day)
   };
 }
 // Warms the exact same two caches Sites' own render already reads from
@@ -7411,7 +7411,7 @@ function buildDayLabels(axis,granularity,utcOffsetSeconds){
         const key=parts.dateStr+'|'+targetHour;
         if(!seen.has(key)){
           seen.add(key);
-          labels.push({i,text:WEEKDAY_NAMES[parts.dayOfWeek],percent:(i/axis.length)*100});
+          labels.push({i,text:WEEKDAY_NAMES[parts.dayOfWeek],dateStr:parts.dateStr,percent:(i/axis.length)*100});
         }
       }
     });
@@ -7420,7 +7420,7 @@ function buildDayLabels(axis,granularity,utcOffsetSeconds){
   // v768: with one name per day the strip usually starts part-way through a day, so name that first part too
   if(axis.length&&(!labels.length||labels[0].i>0)){
     const p0=siteInstantToLocalParts(axis[0],utcOffsetSeconds);
-    labels.unshift({i:0,text:WEEKDAY_NAMES[p0.dayOfWeek],percent:0});
+    labels.unshift({i:0,text:WEEKDAY_NAMES[p0.dayOfWeek],dateStr:p0.dateStr,percent:0});
   }
   return labels;
 }
@@ -7590,7 +7590,7 @@ function renderOneWindBar(containerEl,windData){
         ${bar.timeLabels.map(t=>`<span style="flex:1;text-align:center;font-size:11px;color:var(--text2);white-space:nowrap">${t}</span>`).join('')}
       </div>
       ${bar.dayLabels.length?`<div style="position:relative;height:14px;margin-top:1px">
-        ${bar.dayLabels.map(d=>`<span data-daylabel style="position:absolute;left:${d.percent.toFixed(2)}%;font-size:11px;font-weight:700;color:var(--text2);white-space:nowrap">${d.text}</span>`).join('')}
+        ${bar.dayLabels.map(d=>`<span data-daylabel style="position:absolute;left:${d.percent.toFixed(2)}%;font-size:11px;font-weight:700;color:var(--text2);white-space:nowrap">${d.text}${(()=>{const dc=(windData.daily||[]).find(x=>x.date===d.dateStr);const em=dc&&dc.code!=null?weatherEmoji(dc.code):'';return em?' '+em:'';})()}</span>`).join('')}
       </div>`:''}
       ${windData.hourlyAt&&Date.now()-windData.hourlyAt>=300000?`<div style="font-size:11px;color:var(--text3);margin-top:3px;white-space:nowrap">Hourly forecast from ${_windAgeText(Date.now()-windData.hourlyAt)}</div>`:''}
     </div>`;
