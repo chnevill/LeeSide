@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v763';
+const APP_VERSION='v764';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -6998,7 +6998,7 @@ const _windRetryQueue=[]; // v758: second tries - always served after every wait
 let _windBatch=null;
 let _windSites=0; // v757: sites with a forecast request in progress (first try, second try or 429 pause). The batch summary is written only when this reaches 0, so the last site's result is counted in it.
 let _windRetrying=0; // sites currently waiting out a 429 pause - keeps the batch (and its one summary line) open
-function _windNewBatch(){return{t0:Date.now(),ok:0,fail:0,skipped:0,r429:0,kinds:{},logged:0,okMs:[],retry:0,retryOk:0};}
+function _windNewBatch(){return{t0:Date.now(),ok:0,fail:0,skipped:0,r429:0,kinds:{},logged:0,okMs:[],retry:0,retryOk:0,altUsed:0,altOk:0};}
 function _windPump(){
   while(_windActive<WIND_MAX_PARALLEL&&(_windQueue.length||_windRetryQueue.length)){_windActive++;(_windQueue.length?_windQueue:_windRetryQueue).shift()();}
 }
@@ -7022,7 +7022,7 @@ function _windCloseBatch(){
   try{
     const kinds=Object.keys(bt.kinds).map(k=>k+': '+bt.kinds[k]).join(', ');
     if(bt.fail)_logUploadSoon(); // v750
-      log(`forecast batch: ${bt.ok} ok, ${bt.fail} failed${kinds?' ('+kinds+')':''}${bt.skipped?', '+bt.skipped+' not sent after repeated failures':''}${bt.r429?', '+bt.r429+' retried after 429':''}${bt.retry?', '+bt.retry+' asked a second time at once ('+bt.retryOk+' of them ok)':''}, took ${((Date.now()-bt.t0)/1000).toFixed(1)} s, app ${document.visibilityState}${bt.okMs.length?', replies took '+Math.min.apply(null,bt.okMs)+'-'+Math.max.apply(null,bt.okMs)+' ms':''}`);
+      log(`forecast batch: ${bt.ok} ok, ${bt.fail} failed${kinds?' ('+kinds+')':''}${bt.skipped?', '+bt.skipped+' not sent after repeated failures':''}${bt.r429?', '+bt.r429+' retried after 429':''}${bt.retry?', '+bt.retry+' asked a second time at once ('+bt.retryOk+' of them ok)':''}${bt.altUsed?', '+bt.altUsed+' sent to the second address ('+bt.altOk+' answered)':''}, took ${((Date.now()-bt.t0)/1000).toFixed(1)} s, app ${document.visibilityState}${bt.okMs.length?', replies took '+Math.min.apply(null,bt.okMs)+'-'+Math.max.apply(null,bt.okMs)+' ms':''}`);
   }catch(_){}
 }
 // v760: DIAGNOSTIC ONLY - changes nothing about how forecasts load. When a forecast request gives up with no reply
@@ -7051,11 +7051,12 @@ function _windDiag(url,kind){
     _diagAt=now;
     const c=navigator.connection||{};
     const ctx='page '+document.visibilityState+', '+Math.round((now-_fgAt)/1000)+' s since foreground return, '+Math.round(performance.now()/1000)+' s since app start, '+(_diagLastOkAt?Math.round((now-_diagLastOkAt)/1000)+' s since the last forecast reply':'no forecast reply yet this session')+', service worker controls page: '+((navigator.serviceWorker&&navigator.serviceWorker.controller)?'yes':'no')+', online='+navigator.onLine+', connection '+(c.type||'?')+'/'+(c.effectiveType||'?')+' rtt '+(c.rtt==null?'?':c.rtt)+' downlink '+(c.downlink==null?'?':c.downlink);
-    log('diag: forecast stall ('+kind+') - sending 4 test requests. '+ctx);
+    log('diag: forecast stall ('+kind+') - sending 5 test requests. '+ctx);
     Promise.all([
       _diagProbe('github','https://api.github.com/zen',15000),
       _diagProbe('open-meteo second host (geocoding)','https://geocoding-api.open-meteo.com/v1/search?name=Oakland&count=1&format=json',15000), // v762: a different Open-Meteo hostname
       _diagProbe('open-meteo current-only','https://api.open-meteo.com/v1/forecast?latitude=37.8&longitude=-122.3&current=wind_speed_10m',15000),
+      _diagProbe('open-meteo second address (trailing dot)','https://'+WIND_ALT_HOST+'/v1/forecast?latitude=37.8&longitude=-122.3&current=wind_speed_10m',15000), // v764
       _diagProbe('leeside forecast direct',url,15000)
     ]).then(r=>{log('diag: '+r.join(' | '));try{_logUploadSoon();}catch(_){}}).catch(()=>{});
   }catch(_){}
@@ -7136,9 +7137,23 @@ async function _fetchSiteWindNet(coords,force,timeoutMs=0){
 // v749: ONE attempt at ONE forecast request. Takes a queue slot, always gives it back (finally), and
 // never throws. A reply that is cut off, isn't JSON, or is missing parts of the forecast is a failure
 // of that one site only - the slot is still released and the other sites carry on.
+// v764: SECOND ADDRESS. Evidence from three logged stalls (11/26): api.open-meteo.com stops answering for about two minutes
+// while GitHub and Open-Meteo's other hostname answer from the same phone at the same moment, and even a one-line request
+// to it hangs. That looks like one stuck connection being reused. The same service can be reached as "api.open-meteo.com."
+// (trailing dot) - the browser treats that as a different address and opens its own connection. When a request to the normal
+// address times out (no reply at all - not a quick network error, which means the network is down), new requests go to the
+// second address for WIND_ALT_MS. If the second address also gives no reply, go back to the normal one and don't switch again
+// for the same period. If the second address fails at once twice (the browser or server won't talk to it), it is not used again
+// this session. Every site is still asked; nothing is skipped. Each switch and outcome is written to the log.
+const WIND_ALT_HOST='api.open-meteo.com.';
+const WIND_ALT_MS=120000;
+let _windAltUntil=0,_windAltNoSwitchUntil=0,_windAltBad=false,_windAltFast=0;
 async function _windAttempt(url,timeoutMs,canRetry,isRetry,canInline){
   await _windSlot(!!isRetry); // v758: every try takes its own slot; a second try queues behind waiting first tries
   timeoutMs=timeoutMs||_windStallMs(); // v757: decided when the request actually starts (replies that arrived while it waited in line count)
+  const origUrl=url;
+  const onAlt=!_windAltBad&&Date.now()<_windAltUntil;
+  if(onAlt){url=url.replace('//api.open-meteo.com/','//'+WIND_ALT_HOST+'/');if(_windBatch)_windBatch.altUsed++;}
   let status=0,result=null,kind='',retry429=false,retryNow=false,tm=null;
   const t0=Date.now();
   try{
@@ -7164,8 +7179,22 @@ async function _windAttempt(url,timeoutMs,canRetry,isRetry,canInline){
          'network error ('+((e&&e.message)||'unknown')+')';
   }finally{
     if(tm)clearTimeout(tm);
+    try{
+      if(onAlt){
+        if(result){_windAltFast=0;if(_windBatch)_windBatch.altOk++;}
+        else if(status===0){
+          if(Date.now()-t0<3000){ // failed at once: the second address itself doesn't work from here
+            _windAltFast++;
+            if(_windAltFast>=2){_windAltBad=true;_windAltUntil=0;log('forecast route: the second address failed at once twice ('+kind+') - not used again this session');}
+          }else{_windAltUntil=0;_windAltNoSwitchUntil=Date.now()+WIND_ALT_MS;log('forecast route: the second address also gave no reply ('+kind+') - back to the normal address');}
+        }
+      }else if(!result&&status===0&&/^timed out/.test(kind)&&!_windAltBad&&Date.now()>=_windAltNoSwitchUntil&&Date.now()>=_windAltUntil){
+        _windAltUntil=Date.now()+WIND_ALT_MS;
+        log('forecast route: no reply from api.open-meteo.com ('+kind+') - new requests go to the second address for 2 minutes');
+      }
+    }catch(_){}
     if(result){_diagLastOkAt=Date.now();_windRtt.push({t:Date.now(),ms:Date.now()-t0});if(_windRtt.length>WIND_EVIDENCE_KEEP)_windRtt.shift();}
-    if(!result&&status===0)_windDiag(url,kind); // v760: diagnostic only (see _windDiag)
+    if(!result&&status===0)_windDiag(origUrl,kind); // v760: diagnostic only (see _windDiag)
     if(!result&&status===429&&canRetry){retry429=true;_windRetrying++;} // counted BEFORE the slot is freed so the batch summary stays open during the pause
     else if(!result&&canInline&&(status===0||status>=500))retryNow=true; // v758: the slot is given back at once; the second try queues behind waiting first tries
     _windRelease();
