@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v769';
+const APP_VERSION='v770';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7589,8 +7589,8 @@ function renderOneWindBar(containerEl,windData){
       <div style="display:flex;margin-top:3px">
         ${bar.timeLabels.map(t=>`<span style="flex:1;text-align:center;font-size:11px;color:var(--text2);white-space:nowrap">${t}</span>`).join('')}
       </div>
-      ${bar.dayLabels.length?`<div style="position:relative;height:14px;margin-top:1px">
-        ${bar.dayLabels.map(d=>`<span data-daylabel style="position:absolute;left:${d.percent.toFixed(2)}%;font-size:11px;font-weight:700;color:var(--text2);white-space:nowrap">${d.text}${(()=>{const dc=(windData.daily||[]).find(x=>x.date===d.dateStr);const em=dc&&dc.code!=null?weatherEmoji(dc.code):'';return em?' '+em:'';})()}</span>`).join('')}
+      ${bar.dayLabels.length?`<div style="position:relative;height:21px;margin-top:1px">
+        ${bar.dayLabels.map(d=>`<span data-daylabel style="position:absolute;left:${d.percent.toFixed(2)}%;font-size:14px;line-height:21px;font-weight:700;color:var(--text2);white-space:nowrap">${d.text}${(()=>{const dc=(windData.daily||[]).find(x=>x.date===d.dateStr);const em=dc&&dc.code!=null?weatherEmoji(dc.code):'';return em?' <span style="font-size:17px;vertical-align:-1px">'+em+'</span>':'';})()}</span>`).join('')}
       </div>`:''}
       ${windData.hourlyAt&&Date.now()-windData.hourlyAt>=300000?`<div style="font-size:11px;color:var(--text3);margin-top:3px;white-space:nowrap">Hourly forecast from ${_windAgeText(Date.now()-windData.hourlyAt)}</div>`:''}
     </div>`;
