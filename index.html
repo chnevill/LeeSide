@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v766';
+const APP_VERSION='v767';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7479,6 +7479,27 @@ function refreshAllWindBars(){
     renderOneWindBar(el,data);
   });
 }
+// v767: day names stay pinned at the left edge of the forecast strip while you scroll, until the next day's name reaches
+// them and pushes them off. All horizontal scrolling of the strips is done in JavaScript (drag, momentum, wheel, mouse),
+// so the labels are shifted in the very same step that sets scrollLeft - no separate timer, so they cannot lag the bars.
+// (Earlier tries: CSS sticky v575 did not draw on the Pixel; a separate per-frame JS pass lagged the bars.)
+function _pinDayLabels(scrollEl){
+  try{
+    const sp=scrollEl.querySelectorAll('[data-daylabel]');
+    const n=sp.length;if(!n)return;
+    const sl=scrollEl.scrollLeft;
+    for(let i=0;i<n;i++){const e=sp[i];if(e._b===undefined&&e.offsetWidth>0){e._b=e.offsetLeft;e._w=e.offsetWidth;}}
+    for(let i=0;i<n;i++){
+      const e=sp[i];if(e._b===undefined)continue;
+      const nb=(i+1<n&&sp[i+1]._b!==undefined)?sp[i+1]._b:Infinity;
+      const left=Math.max(e._b,Math.min(sl,nb-e._w-4)); // 4 px gap so the pushed-off name does not touch the arriving one
+      const t=left-e._b;
+      if(e._t!==t){e._t=t;e.style.transform=t?`translateX(${t.toFixed(1)}px)`:'';}
+    }
+  }catch(_){}
+}
+function _pinDayLabelsAll(){document.querySelectorAll('[data-windscroll]').forEach(_pinDayLabels);}
+
 let _windScrollLeftPx=0;
 let _windScrollIsFresh=true;
 // v681: the slider keeps its position while you are using the app, but after 30 minutes without touching it (or being away from the app that long)
@@ -7532,6 +7553,7 @@ function _startWindMomentum(scrollEl,listEl,velocity){
     listEl.querySelectorAll('[data-windscroll]').forEach(other=>{
       if(other!==scrollEl)other.scrollLeft=newLeft;
     });
+    _pinDayLabelsAll();
     _windMomentum.velocity*=friction;
     if(Math.abs(_windMomentum.velocity)<0.05||newLeft<=0||newLeft>=maxScroll){
       _windMomentum.rafId=null;
@@ -7563,7 +7585,7 @@ function renderOneWindBar(containerEl,windData){
         ${bar.timeLabels.map(t=>`<span style="flex:1;text-align:center;font-size:11px;color:var(--text2);white-space:nowrap">${t}</span>`).join('')}
       </div>
       ${bar.dayLabels.length?`<div style="position:relative;height:14px;margin-top:1px">
-        ${bar.dayLabels.map(d=>`<span style="position:absolute;left:${d.percent.toFixed(2)}%;font-size:11px;font-weight:700;color:var(--text2);white-space:nowrap">${d.text}</span>`).join('')}
+        ${bar.dayLabels.map(d=>`<span data-daylabel style="position:absolute;left:${d.percent.toFixed(2)}%;font-size:11px;font-weight:700;color:var(--text2);white-space:nowrap">${d.text}</span>`).join('')}
       </div>`:''}
       ${windData.hourlyAt&&Date.now()-windData.hourlyAt>=300000?`<div style="font-size:11px;color:var(--text3);margin-top:3px;white-space:nowrap">Hourly forecast from ${_windAgeText(Date.now()-windData.hourlyAt)}</div>`:''}
     </div>`;
@@ -7576,6 +7598,7 @@ function renderOneWindBar(containerEl,windData){
     _windScrollTouchedAt=Date.now();
   }
   scrollEl.scrollLeft=_windScrollLeftPx;
+  _pinDayLabels(scrollEl);
 }
 
 function weatherEmoji(code){
@@ -8716,6 +8739,7 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
         listEl.querySelectorAll('[data-windscroll]').forEach(other=>{
           if(other!==scrollEl)other.scrollLeft=newLeft;
         });
+        _pinDayLabelsAll();
         // Velocity tracked here, continuously, between consecutive touchmove
         // samples only - never involving touchend itself. The finger is
         // typically almost stationary in the brief gap between "last
@@ -8767,6 +8791,7 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
       listEl.querySelectorAll('[data-windscroll]').forEach(other=>{
         if(other!==scrollEl)other.scrollLeft=newLeft;
       });
+      _pinDayLabelsAll();
     },{passive:false});
     // Mouse equivalent of the touch-drag above - a mousedown here just starts
     // tracking; the actual drag (mousemove) and release (mouseup) are handled
@@ -12844,6 +12869,7 @@ function wire(){
     document.querySelectorAll('[data-windscroll]').forEach(other=>{
       if(other!==_windDragState.el)other.scrollLeft=newLeft;
     });
+    _pinDayLabelsAll();
   });
   document.addEventListener('mouseup',()=>{_windDragState.active=false;_windDragState.el=null;});
 
