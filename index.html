@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v764';
+const APP_VERSION='v765';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -1774,7 +1774,7 @@ function log(...args){
 // v750: optional remote copy of this log, so it can be read without copying and pasting it. OFF unless a token has
 // been pasted into this phone (Sign-in log panel, "Remote log" button). The token is kept only on this device (never
 // synced, never in the log) and can write to ONE private repo, chnevill/leeside-logs, nothing else. It sends
-// the last 1200 log lines to one file per phone (log-iphone.txt / log-android.txt), overwritten each time: after a forecast
+// the last 2500 (v765, was 1200) log lines to one file per phone (log-iphone.txt / log-android.txt), overwritten each time: after a forecast
 // failure, on returning to the app, and once at start - never more than once every 2 minutes. A failed send is
 // ignored and never retried in a loop; it changes nothing else in the app.
 const LOG_REPO='chnevill/leeside-logs';
@@ -1791,7 +1791,7 @@ async function _logUploadNow(){
   if(!tok||_logUpBusy)return;
   _logUpBusy=true;_logUpLast=Date.now();
   try{
-    const text='LeeSide log | '+APP_VERSION+' | sent '+new Date().toISOString()+' | '+navigator.userAgent+' | online='+navigator.onLine+' | '+document.visibilityState+'\n'+dbg.slice(-1200).join('\n')+'\n\n=== SIGN-IN LOG (newest first, last 500) ===\n'+[...authLog].reverse().slice(0,500).map(e=>new Date(e.ts).toLocaleString()+'  -  '+e.event).join('\n')+'\n';
+    const text='LeeSide log | '+APP_VERSION+' | sent '+new Date().toISOString()+' | '+navigator.userAgent+' | online='+navigator.onLine+' | '+document.visibilityState+'\n'+dbg.slice(-2500).join('\n')+'\n\n=== SIGN-IN LOG (newest first, last 500) ===\n'+[...authLog].reverse().slice(0,500).map(e=>new Date(e.ts).toLocaleString()+'  -  '+e.event).join('\n')+'\n';
     const b64=btoa(unescape(encodeURIComponent(text)));
     const url='https://api.github.com/repos/'+LOG_REPO+'/contents/log-'+(/Android/i.test(navigator.userAgent)?'android':'iphone')+'.txt';
     const hdr={Authorization:'Bearer '+tok,Accept:'application/vnd.github+json'};
@@ -6965,19 +6965,27 @@ async function _windRecoverRound(){
     }
     if(!todo.length){if(!busy)_windRecoverN=0;return;} // sites still in flight schedule their own recovery if they fail
     _windRecoverN++;
-    const res=await Promise.all(todo.map(c=>fetchSiteWind(c,true))); // force: this timer is its own pacing, so the 30 s cooldown does not apply (a request already queued or running is still joined, not doubled)
+    const res=await Promise.all(todo.map(c=>fetchSiteWind(c,true,0,'auto-recovery'))); // force: this timer is its own pacing, so the 30 s cooldown does not apply (a request already queued or running is still joined, not doubled)
     todo.forEach((c,i)=>_windRepaint(c,res[i]));
     if(todo.some(_windNeedsRetry))_scheduleWindRecovery();else if(!busy)_windRecoverN=0;
   }catch(e){}
 }
-async function fetchSiteWind(coords,force,timeoutMs){
+// v765: every forecast decision for a site is written to the debug log by name, with why it was asked and what happened
+function _siteLabel(coords){try{const s=(sites||[]).find(x=>!x._deleted&&x.coords===coords);return s&&s.name?s.name:coords;}catch(_){return coords;}}
+function _sfLog(m){try{log('site forecast: '+m);}catch(_){}}
+async function fetchSiteWind(coords,force,timeoutMs,why){
   if(!coords)return null;
+  why=why||'other';
+  const _nm=_siteLabel(coords);
   const cached=_windCache[coords];
-  if(!force&&cached&&Date.now()-cached.fetchedAt<WIND_CACHE_MS)return cached.data;
-  if(_windInflight[coords])return _windInflight[coords]; // v749: asking again - pull-down included - joins the request already queued or running for this site; force skips only the saved result and the cooldown
-  if(!force&&_windFailAt[coords]&&Date.now()-_windFailAt[coords]<WIND_FAIL_COOLDOWN_MS)return null; // v746: failed a moment ago - don't start another round yet
+  if(!force&&cached&&Date.now()-cached.fetchedAt<WIND_CACHE_MS){_sfLog(`${_nm} [${why}] - already had one ${Math.round((Date.now()-cached.fetchedAt)/60000)} min old, not asked`);return cached.data;}
+  if(_windInflight[coords]){_sfLog(`${_nm} [${why}] - a request is already on its way, joined it`);return _windInflight[coords];} // v749: asking again - pull-down included - joins the request already queued or running for this site; force skips only the saved result and the cooldown
+  if(!force&&_windFailAt[coords]&&Date.now()-_windFailAt[coords]<WIND_FAIL_COOLDOWN_MS){_sfLog(`${_nm} [${why}] - failed ${Math.round((Date.now()-_windFailAt[coords])/1000)} s ago, not asked again yet (30 s pause)`);return null;} // v746: failed a moment ago - don't start another round yet
   _windTried[coords]=true;
+  {const _sv0=_windSavedFor(coords);_sfLog(`${_nm} [${why}] - asked${force?' (forced)':''}; ${_sv0?'saved copy is '+Math.round(_sv0.age/60000)+' min old':'nothing saved'}; ${_windActive} running, ${_windQueue.length} waiting`);}
+  const _t0=Date.now();
   const p=_fetchSiteWindNet(coords,!!force,timeoutMs||0); // 0 = adaptive first-try limit (v757)
+  p.then(w=>_sfLog(`${_nm} [${why}] - ${w?'got a fresh forecast':'no forecast'} after ${((Date.now()-_t0)/1000).toFixed(1)} s`),()=>_sfLog(`${_nm} [${why}] - error after ${((Date.now()-_t0)/1000).toFixed(1)} s`));
   _windInflight[coords]=p;
   const _done=()=>{if(_windInflight[coords]===p)delete _windInflight[coords];};p.then(_done,_done);
   return p;
@@ -7064,7 +7072,7 @@ function _windDiag(url,kind){
 function _windNoteFail(coords,kind,ms){
   const bt=_windBatch;if(!bt)return;
   bt.fail++;bt.kinds[kind]=(bt.kinds[kind]||0)+1;
-  if(bt.logged<5){bt.logged++;try{log(`forecast fetch failed for ${coords}: ${kind} (after ${ms} ms)`);}catch(_){}}
+  if(bt.logged<60){bt.logged++;try{log(`forecast fetch failed for ${_siteLabel(coords)} (${coords}): ${kind} (after ${ms} ms)`);}catch(_){}}
 }
 async function _fetchSiteWindNet(coords,force,timeoutMs=0){
   const[lat,lon]=coords.split(',').map(parseFloat);
@@ -7258,7 +7266,7 @@ function prefetchSitesWeather(){
       const c=siteCoordsByUuid[uuid];if(!c)return null;
       const[la,lo]=c.split(',').map(parseFloat);
       return{c,d:haversineKm(loc.lat,loc.lon,la,lo)};
-    }).filter(Boolean).sort((a,b)=>a.d-b.d).slice(0,SITE_WIND_FIRST).forEach(x=>fetchSiteWind(x.c,false));
+    }).filter(Boolean).sort((a,b)=>a.d-b.d).slice(0,SITE_WIND_FIRST).forEach(x=>fetchSiteWind(x.c,false,0,'start-up, nearest 15'));
   });
 }
 function fmtFlightWind(f){
@@ -8546,7 +8554,7 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
     // real network call, so this only does real work right after a cold load.
     listEl.innerHTML='<div style="padding:24px;text-align:center;color:var(--text3);font-size:14px">Checking current wind…</div>';
     await Promise.all(sites.filter(s=>!s._deleted&&s.coords).map(async s=>{
-      const w=await fetchSiteWind(s.coords,false);
+      const w=await fetchSiteWind(s.coords,false,0,'other (line 8549 caller)');
       _windDataCache[s.uuid]=w;
     }));
   }
@@ -8597,9 +8605,10 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
 
   // Fetch wind in parallel, fill in each card as it resolves — don't block the list on this
   // v746: the nearest SITE_WIND_FIRST cards ask right away; the others ask when they scroll into view
-  const _loadSiteWind=({uuid})=>{
+  const _loadSiteWind=({uuid},why)=>{
     const coords=siteCoordsByUuid[uuid];
     if(!coords)return;
+    let _nm=uuid;try{_nm=((sites||[]).find(x=>x.uuid===uuid)||{}).name||uuid;}catch(_){} // v765: log line names the site
     const showResult=w=>{
       if(w){_paintSiteWind(uuid,w);}
       else{
@@ -8620,13 +8629,14 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
       if(sv)_paintSiteWind(uuid,sv.data,sv.age); // v727: show the saved forecast while the fresh one loads
       else _siteWindState(uuid);
     }
-    const _fp=fetchSiteWind(coords,force);
+    const _fp=fetchSiteWind(coords,force,0,why||(force?'list refresh (forced)':'list draw, nearest 15'));
     const _sv2=(force||!(_c&&Date.now()-_c.fetchedAt<WIND_CACHE_MS))?_windSavedFor(coords):null;
     if(_sv2)_paintSiteWind(uuid,_sv2.data,_sv2.age); // v763: repaint now the request is registered, so the label can say "updating…"
     _fp.then(showResult);
   };
   if(_siteWindObserver){_siteWindObserver.disconnect();_siteWindObserver=null;}
-  withDist.slice(0,SITE_WIND_FIRST).forEach(_loadSiteWind);
+  try{_sfLog(`list drawn: ${withDist.length} sites; asking now (nearest ${SITE_WIND_FIRST}): ${withDist.slice(0,SITE_WIND_FIRST).map(x=>_siteLabel(siteCoordsByUuid[x.uuid])).join(', ')}; waiting for scroll: ${withDist.slice(SITE_WIND_FIRST).map(x=>_siteLabel(siteCoordsByUuid[x.uuid])).join(', ')||'none'}${noFetch?' (redraw only, no fetch)':''}`);}catch(_){}
+  withDist.slice(0,SITE_WIND_FIRST).forEach(it=>_loadSiteWind(it));
   {
     const pending=[];
     withDist.slice(SITE_WIND_FIRST).forEach(it=>{
@@ -8647,7 +8657,7 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
           const it=byUuid.get(u);if(!it)return;
           byUuid.delete(u);
           if(_siteWindObserver)_siteWindObserver.unobserve(en.target);
-          _loadSiteWind(it);
+          _loadSiteWind(it,'scrolled into view');
         });
       },{rootMargin:'300px 0px'});
       pending.forEach(it=>{const el=listEl.querySelector(`[data-sitenotecard="${it.uuid}"]`);if(el)_siteWindObserver.observe(el);else _loadSiteWind(it);});
@@ -8880,7 +8890,7 @@ function showNoteView(nid,siteKey){
         _lastTry=Date.now();
         const fc=_curUuid?siteCoordsByUuid[_curUuid]:null;
         if(!fc)return;
-        const _fpd=fetchSiteWind(fc,false);
+        const _fpd=fetchSiteWind(fc,false,0,'detail screen');
         paintDetail(); // v763: the request is registered - label can say "updating…"
         _fpd.then(w2=>{
           const nowC=_curUuid?siteCoordsByUuid[_curUuid]:null;
