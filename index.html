@@ -1456,7 +1456,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v775';
+const APP_VERSION='v777';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -9076,7 +9076,7 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
         else _paintSiteWind(uuid,null); // v728: nothing to show - "No data", and the Windy link
       }
     };
-    if(noFetch){
+    if(noFetch&&!why){ // v777: a scroll-triggered ask (why set) always asks, even when the list was drawn by a redraw-only pass
       const bk=_windBestKnown(coords);
       if(bk&&bk.age<WIND_CACHE_MS){_paintSiteWind(uuid,bk.data,bk.age);return;} // already have a current one - just show it (v761: an older one is never drawn as current)
       if(_windInflight[coords]){_siteWindState(uuid);_windInflight[coords].then(showResult);return;} // one is on its way - wait for that
@@ -9103,6 +9103,12 @@ async function renderSiteNotesCardList(force,q='',noFetch=false){
       const coords=siteCoordsByUuid[it.uuid];
       if(!coords)return;
       const _c=_windCache[coords];
+      if(noFetch&&!windFilter&&'IntersectionObserver' in window&&!_windInflight[coords]){
+        // v777: redraw-only pass (e.g. after a sync). Show what we hold, send nothing - but if that copy is stale,
+        // watch the card so scrolling to it still asks (the redraw threw the earlier watcher away)
+        const _bk=_windBestKnown(coords);
+        if(!(_bk&&_bk.age<WIND_CACHE_MS)){_loadSiteWind(it);pending.push(it);return;}
+      }
       if(noFetch||windFilter||(_c&&Date.now()-_c.fetchedAt<WIND_CACHE_MS)||!('IntersectionObserver' in window)){_loadSiteWind(it);return;} // already have it / redraw / no observer support: nothing extra to wait for
       const sv=_windSavedFor(coords);
       if(sv)_paintSiteWind(it.uuid,sv.data,sv.age);else _siteWindState(it.uuid);
