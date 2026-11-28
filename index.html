@@ -1150,7 +1150,7 @@ const DRIVE_FILE='uplift-logbook.json';
 // actually waiting - which only happens when CACHE (or anything else in sw.js) changes.
 // Skip the CACHE bump and the app still eventually shows new content, but only after
 // two full closes-and-reopens, not seamlessly at a safe moment like it's designed to.
-const APP_VERSION='v771';
+const APP_VERSION='v773';
 const STORE='uplift_v2';
 const DEFAULT_FLIGHT_TYPES=['Sledder','Soaring','Thermal','XC','Triangle','Comp','Vol-biv','SIV','Acro'];
 const GEAR_CATS=[{id:'wing',icon:'🪂',label:'Wing'},{id:'harness',icon:'🦺',label:'Harness'},{id:'reserve',icon:'🛟',label:'Reserve'}];
@@ -7064,8 +7064,104 @@ function _windCloseBatch(){
 // straight from here (no queue, no retry, no app cache). Each records time to first reply, time to full body,
 // and the status or exact error. Telling these apart shows whether the whole connection is stalled or only one host.
 let _fgAt=Date.now(),_diagAt=0,_diagLastOkAt=0; // v762: _diagLastOkAt = when a forecast reply last arrived (diagnostic context only)
+// v773: NETWORK DETAIL LOGGING ONLY - changes nothing about how forecasts load, retry or time out. Written because the
+// 11/27 stalls (no reply from api.open-meteo.com for 2-3 minutes after the app had been away) could not be explained from
+// the log: it did not say what the browser did with each request, what else was being requested when the app woke up,
+// or whether the page had been frozen. Chrome's resource timing is read for every forecast request (and every test
+// request): protocol (HTTP/2 or HTTP/3), whether a new connection was set up, name lookup, time to first byte.
+// LIMITS: it cannot say WHICH connection a request used, only whether it set one up; Chrome may hide detailed timing for
+// requests to another site, and an aborted request may have little or no record - the log says so each time it is the case.
+const _netRing=[]; // the browser's last 150 resource records, any host
+try{
+  new PerformanceObserver(l=>{for(const e of l.getEntries()){_netRing.push(e);if(_netRing.length>150)_netRing.shift();}}).observe({type:'resource',buffered:true});
+}catch(_){}
+function _netFind(url,t0perf){ // the record whose start is closest to when this request was sent
+  let best=null,bd=1e9;
+  for(let i=_netRing.length-1;i>=0;i--){const e=_netRing[i];if(e.name!==url)continue;const d=Math.abs(e.startTime-t0perf);if(d<bd){bd=d;best=e;}}
+  return bd<=250?best:null;
+}
+function _netDescribe(e){
+  if(!e)return 'the browser kept no timing record for it';
+  const f=n=>Math.round(n);
+  const seen=(e.requestStart>0||e.responseStart>0||e.connectEnd>0||e.domainLookupEnd>0);
+  const p=['protocol '+(e.nextHopProtocol||'not shown')];
+  if(!seen)p.push('detailed timing hidden or empty (only the total, '+f(e.duration)+' ms)');
+  else{
+    if(e.connectEnd>e.connectStart+0.5)p.push('NEW connection set up (connect '+f(e.connectEnd-e.connectStart)+' ms'+(e.secureConnectionStart>0?', secure setup '+f(e.connectEnd-e.secureConnectionStart)+' ms':'')+')');
+    else p.push('no new connection set up (reused, or not shown)');
+    if(e.domainLookupEnd>e.domainLookupStart+0.5)p.push('name lookup '+f(e.domainLookupEnd-e.domainLookupStart)+' ms');
+    if(e.requestStart>0)p.push(e.responseStart>0?('first byte '+f(e.responseStart-e.requestStart)+' ms after sending'):'request sent, no first byte ever');
+    else p.push('request never sent');
+    p.push('total '+f(e.duration)+' ms');
+  }
+  if(e.responseStatus)p.push('status '+e.responseStatus);
+  if(e.workerStart>0)p.push('handled via service worker');
+  if(e.transferSize)p.push(e.transferSize+' B');
+  return p.join(', ');
+}
+let _netEp=null,_netOpen={},_netOpenId=0,_netLastEndAt=0,_netHiddenAt=0;
+function _netUrlLabel(url){try{const m=url.match(/latitude=([-\d.]+)&longitude=([-\d.]+)/);return m?_siteLabel(m[1]+','+m[2]):url.replace(/^https:\/\//,'').slice(0,40);}catch(_){return '?';}}
+function _netOpenInfo(){ // how many forecast requests have started and not ended, and how long the oldest has been going
+  const ids=Object.keys(_netOpen);let oldest=0;const now=Date.now();
+  ids.forEach(i=>{oldest=Math.max(oldest,now-_netOpen[i]);});
+  return ids.length+' unfinished'+(ids.length?' (oldest '+Math.round(oldest/1000)+' s)':'');
+}
+// called when a forecast request is actually sent (after it has had its turn in the queue). Returns what _netNoteEnd needs.
+function _netNoteStart(url,askedPerf){
+  try{
+    const now=Date.now(),np=performance.now(),others=Object.keys(_netOpen).length;
+    const quiet=_netLastEndAt?Math.round((now-_netLastEndAt)/1000):-1;
+    let first=false;
+    if(!_netEp||(others===0&&now-_netEp.lastAt>60000)){
+      first=true;
+      _netEp={t0:now,np0:np,n:0,logged:0,lastAt:now};
+      log('net: NEW round of forecast requests - the first one is '+_netUrlLabel(url)+'; '+(quiet<0?'no earlier forecast request this session':quiet+' s since the last forecast request ended')+'; '+others+' others running; page '+document.visibilityState+'; '+Math.round((now-_fgAt)/1000)+' s since foreground return');
+    }
+    _netEp.n++;_netEp.lastAt=now;
+    const id=++_netOpenId;_netOpen[id]=now;
+    return{id,n:_netEp.n,ep:_netEp,startOff:Math.round(now-_netEp.t0),np,askedWait:Math.round(np-askedPerf),others,first};
+  }catch(_){return null;}
+}
+function _netNoteEnd(h,url,ok,kind,ms){
+  try{
+    if(!h)return;
+    delete _netOpen[h.id];_netLastEndAt=Date.now();
+    const ep=h.ep;ep.lastAt=Date.now();
+    const started=ep.n,running=Object.keys(_netOpen).length;
+    const wantLog=(!ok)?(ep.failLogged=(ep.failLogged||0)+1)<=60:ep.logged++<10;
+    if(!wantLog)return;
+    setTimeout(()=>{ // the browser writes its record a moment after the request ends
+      try{log('net: #'+h.n+' '+_netUrlLabel(url)+' - sent '+h.startOff+' ms into this round (waited '+h.askedWait+' ms in line, '+h.others+' others running when sent); '+(ok?'got a reply':'NO reply ('+kind+')')+' after '+ms+' ms; when it ended '+started+' requests had been sent in this round, '+running+' still running; the browser says: '+_netDescribe(_netFind(url,h.np)));}catch(_){}
+    },400);
+  }catch(_){}
+}
+// what else the page asked for just after waking up, and what state the forecast queue was in
+function _netWakeReport(hiddenSec){
+  try{
+    const sinceP=performance.now()-3500;
+    const rows=_netRing.filter(e=>e.startTime>=sinceP-1500).slice(-40).map(e=>{
+      let h='?',pth='';try{const u=new URL(e.name);h=u.host;pth=u.pathname.slice(0,22);}catch(_){}
+      return h+pth+' +'+Math.round((e.startTime-sinceP+3500)/100)/10+'s '+(e.nextHopProtocol||'?')+' '+Math.round(e.duration)+'ms'+(e.responseStatus?' '+e.responseStatus:'');
+    });
+    log('lifecycle: back after '+hiddenSec+' s hidden. Forecast: '+_windActive+' running, '+_windQueue.length+' waiting, '+_netOpenInfo()+'; '+Object.keys(_windInflight).length+' sites with a request in progress; '+(_diagLastOkAt?Math.round((Date.now()-_diagLastOkAt)/1000)+' s since the last forecast reply':'no forecast reply yet')+'. Requests the browser recorded in the first 3.5 s after return (host/path, seconds after return, protocol, duration): '+(rows.length?rows.join('; '):'none'));
+  }catch(_){}
+}
+try{
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='hidden'){_netHiddenAt=Date.now();return;}
+    const hiddenSec=_netHiddenAt?Math.round((Date.now()-_netHiddenAt)/1000):-1;_netHiddenAt=0;
+    if(hiddenSec>=0&&hiddenSec<60)return;
+    log('lifecycle: page visible again; '+(hiddenSec<0?'hidden time unknown':'was hidden '+hiddenSec+' s')+'; wasDiscarded='+(document.wasDiscarded?'yes':'no')+'; Forecast: '+_windActive+' running, '+_windQueue.length+' waiting, '+_netOpenInfo());
+    setTimeout(()=>_netWakeReport(hiddenSec),3500);
+  });
+  document.addEventListener('freeze',()=>{try{log('lifecycle: the browser FROZE this page');}catch(_){}});
+  document.addEventListener('resume',()=>{try{log('lifecycle: the browser RESUMED this page ('+_netOpenInfo()+' forecast requests unfinished)');}catch(_){}});
+  window.addEventListener('pageshow',e=>{try{if(e.persisted)log('lifecycle: page restored from the back/forward cache');}catch(_){}});
+  window.addEventListener('pagehide',e=>{try{log('lifecycle: pagehide (kept in the back/forward cache: '+(e.persisted?'yes':'no')+')');}catch(_){}});
+  log('lifecycle: page started; wasDiscarded='+(document.wasDiscarded?'yes':'no'));
+}catch(_){}
 async function _diagProbe(name,url,tmoMs){
-  const t0=performance.now();let hdr=null,body=null,st='',bytes=0;
+  const t0=performance.now(),t0p=t0;let hdr=null,body=null,st='',bytes=0;
   const ac=new AbortController();const tm=setTimeout(()=>{try{ac.abort();}catch(_){}},tmoMs);
   try{
     const r=await fetch(url,{cache:'no-store',signal:ac.signal});
@@ -7074,7 +7170,9 @@ async function _diagProbe(name,url,tmoMs){
   }catch(e){
     st=(hdr===null?'no reply: ':'body cut off: ')+((e&&e.name)||'error')+((e&&e.message)?' ('+e.message+')':'')+' after '+Math.round(performance.now()-t0)+' ms';
   }finally{clearTimeout(tm);}
-  return name+': first reply '+(hdr===null?'never':hdr+' ms')+', full body '+(body===null?'never':body+' ms')+', '+st+(bytes?', '+bytes+' B':'');
+  await new Promise(r=>setTimeout(r,400)); // v773: the browser writes its record a moment after the request ends
+  let _br='';try{_br=' [browser: '+_netDescribe(_netFind(url,t0p))+']';}catch(_){}
+  return name+': first reply '+(hdr===null?'never':hdr+' ms')+', full body '+(body===null?'never':body+' ms')+', '+st+(bytes?', '+bytes+' B':'')+_br;
 }
 function _windDiag(url,kind){
   try{
@@ -7083,7 +7181,7 @@ function _windDiag(url,kind){
     _diagAt=now;
     const c=navigator.connection||{};
     const ctx='page '+document.visibilityState+', '+Math.round((now-_fgAt)/1000)+' s since foreground return, '+Math.round(performance.now()/1000)+' s since app start, '+(_diagLastOkAt?Math.round((now-_diagLastOkAt)/1000)+' s since the last forecast reply':'no forecast reply yet this session')+', service worker controls page: '+((navigator.serviceWorker&&navigator.serviceWorker.controller)?'yes':'no')+', online='+navigator.onLine+', connection '+(c.type||'?')+'/'+(c.effectiveType||'?')+' rtt '+(c.rtt==null?'?':c.rtt)+' downlink '+(c.downlink==null?'?':c.downlink);
-    log('diag: forecast stall ('+kind+') - sending 5 test requests. '+ctx);
+    log('diag: forecast stall ('+kind+') - sending 5 test requests. '+ctx+'. Forecast queue: '+_windActive+' running, '+_windQueue.length+' waiting, '+_netOpenInfo());
     Promise.all([
       _diagProbe('github','https://api.github.com/zen',15000),
       _diagProbe('open-meteo second host (geocoding)','https://geocoding-api.open-meteo.com/v1/search?name=Oakland&count=1&format=json',15000), // v762: a different Open-Meteo hostname
@@ -7181,6 +7279,7 @@ const WIND_ALT_HOST='api.open-meteo.com.';
 const WIND_ALT_MS=120000;
 let _windAltUntil=0,_windAltNoSwitchUntil=0,_windAltBad=false,_windAltFast=0;
 async function _windAttempt(url,timeoutMs,canRetry,isRetry,canInline){
+  const _askedPerf=performance.now(); // v773: logging only
   await _windSlot(!!isRetry); // v758: every try takes its own slot; a second try queues behind waiting first tries
   timeoutMs=timeoutMs||_windStallMs(); // v757: decided when the request actually starts (replies that arrived while it waited in line count)
   const origUrl=url;
@@ -7188,6 +7287,7 @@ async function _windAttempt(url,timeoutMs,canRetry,isRetry,canInline){
   if(onAlt){url=url.replace('//api.open-meteo.com/','//'+WIND_ALT_HOST+'/');if(_windBatch)_windBatch.altUsed++;}
   let status=0,result=null,kind='',retry429=false,retryNow=false,tm=null;
   const t0=Date.now();
+  const _nh=_netNoteStart(url,_askedPerf); // v773: logging only
   try{
     const ac=new AbortController();
     // v752: hard stop. The timer both cancels the request AND ends the wait itself, so a request the browser
@@ -7226,6 +7326,7 @@ async function _windAttempt(url,timeoutMs,canRetry,isRetry,canInline){
       }
     }catch(_){}
     if(result){_diagLastOkAt=Date.now();_windRtt.push({t:Date.now(),ms:Date.now()-t0});if(_windRtt.length>WIND_EVIDENCE_KEEP)_windRtt.shift();}
+    _netNoteEnd(_nh,url,!!result,kind||('HTTP '+status),Date.now()-t0); // v773: logging only
     if(!result&&status===0)_windDiag(origUrl,kind); // v760: diagnostic only (see _windDiag)
     if(!result&&status===429&&canRetry){retry429=true;_windRetrying++;} // counted BEFORE the slot is freed so the batch summary stays open during the pause
     else if(!result&&canInline&&(status===0||status>=500))retryNow=true; // v758: the slot is given back at once; the second try queues behind waiting first tries
